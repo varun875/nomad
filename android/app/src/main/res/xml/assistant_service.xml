@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.finn.nomad.AssistantSessionService"
+    android:recognitionService="com.finn.nomad.AssistantRecognitionService"
+    android:supportsAssist="true"
+
+    android:supportsLocalInteraction="true" />

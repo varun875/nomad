@@ -1,30 +1,84 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:nomad/main.dart';
+import 'package:nomad/core/models/chat_session.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  group('ChatMessage', () {
+    test('serializes and deserializes a user message', () {
+      final msg = ChatMessage(
+        text: 'Hello',
+        fromUser: true,
+        time: DateTime.utc(2026, 7, 31, 12, 0, 0),
+        imagePaths: ['/tmp/a.png'],
+        outputTokPerSec: 12.5,
+        outputTokens: 250,
+      );
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+      final restored = ChatMessage.fromJson(msg.toJson());
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+      expect(restored.text, 'Hello');
+      expect(restored.fromUser, isTrue);
+      expect(restored.time, msg.time);
+      expect(restored.imagePaths, ['/tmp/a.png']);
+      expect(restored.outputTokPerSec, 12.5);
+      expect(restored.outputTokens, 250);
+    });
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    test('uses defaults for missing optional fields', () {
+      final restored = ChatMessage.fromJson({
+        'text': 'Hi',
+        'fromUser': false,
+        'time': '2026-07-31T00:00:00.000',
+      });
+
+      expect(restored.imagePaths, isEmpty);
+      expect(restored.outputTokPerSec, 0);
+      expect(restored.outputTokens, 0);
+    });
+  });
+
+  group('ChatSession', () {
+    test('serializes and deserializes a full conversation', () {
+      final session = ChatSession(
+        id: '123',
+        title: 'Test chat',
+        messages: [
+          ChatMessage(text: 'Hi', fromUser: true, time: DateTime.utc(2026, 7, 31)),
+          ChatMessage(
+            text: 'Hello!',
+            fromUser: false,
+            time: DateTime.utc(2026, 7, 31),
+          ),
+        ],
+        updatedAt: DateTime.utc(2026, 7, 31, 12, 30),
+        modelId: 'nomad-lite-qwen-3.5-0.8b',
+        projectId: 'p-1',
+      );
+
+      final restored = ChatSession.fromJson(session.toJson());
+
+      expect(restored.id, '123');
+      expect(restored.title, 'Test chat');
+      expect(restored.messages, hasLength(2));
+      expect(restored.messages.first.fromUser, isTrue);
+      expect(restored.messages.last.text, 'Hello!');
+      expect(restored.modelId, 'nomad-lite-qwen-3.5-0.8b');
+      expect(restored.projectId, 'p-1');
+      expect(restored.updatedAt, session.updatedAt);
+    });
+
+    test('round-trips an empty conversation', () {
+      final session = ChatSession(
+        id: 'empty',
+        title: '',
+        messages: [],
+        updatedAt: DateTime.utc(2026, 7, 31),
+      );
+
+      final restored = ChatSession.fromJson(session.toJson());
+
+      expect(restored.messages, isEmpty);
+      expect(restored.modelId, isNull);
+      expect(restored.projectId, isNull);
+    });
   });
 }
