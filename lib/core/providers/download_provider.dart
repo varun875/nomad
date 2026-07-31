@@ -77,8 +77,35 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
           }
         }
       });
+      // Re-emit the current status/progress of tasks that were running while
+      // the app was suspended, so the UI resumes where it left off.
+      await FileDownloader().resumeFromBackground();
+      await _reconcileStaleDownloads();
     } catch (e, stack) {
       print('ERROR: Failed to configure downloader: $e\n$stack');
+    }
+  }
+
+  /// After an app restart, restore any downloads that finished while the app
+  /// was away. background_downloader removes completed tasks from its task
+  /// table, so a model left in "downloading" state with no live task has
+  /// either finished or failed — verify the file and settle it.
+  Future<void> _reconcileStaleDownloads() async {
+    final stale =
+        state.where((m) => m.downloadStatus == 'downloading').toList();
+    for (final model in stale) {
+      final task = await FileDownloader().taskForId(model.id);
+      if (task != null) continue; // Still alive; resumeFromBackground handles it.
+
+      final directory = await getApplicationDocumentsDirectory();
+      final modelPath =
+          '${directory.path}/models/${model.id.replaceAll('/', '_')}.gguf';
+      if (await File(modelPath).exists()) {
+        // _markAsCompleted re-verifies the file size and deletes it if bogus.
+        _markAsCompleted(model.id);
+      } else {
+        _markAsFailed(model.id, 'Download interrupted. Tap to retry.');
+      }
     }
   }
 
@@ -126,6 +153,11 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
       state = [...state, updatedModel];
     }
 
+    // Persist the in-progress record so a restart (which re-reads Hive) can
+    // restore the download and its progress instead of forgetting it.
+    final box = Hive.box('models');
+    await box.put(model.id, updatedModel.toJson());
+
     final enqueued = await FileDownloader().enqueue(task);
     print('Download task enqueued for ${model.id}: $enqueued (file: $filename)');
     if (enqueued) {
@@ -152,6 +184,8 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
   void _updateProgress(String id, double progress, double speed) {
     // Clamp progress between 0 and 1 to avoid negative or >100% values
     final clampedProgress = progress.clamp(0.0, 1.0);
+    final newPercent = (clampedProgress * 100).round();
+    final box = Hive.box('models');
     state = state.map((m) {
       if (m.id == id) {
         final totalBytes = m.totalBytes ?? (m.sizeMB * 1024 * 1024);
@@ -165,13 +199,19 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
           totalBytes.toInt(),
         );
 
-        return m.copyWith(
+        final updated = m.copyWith(
           downloadStatus: 'downloading',
-          progress: (clampedProgress * 100).toInt(),
+          progress: newPercent,
           downloadSpeed: speed >= 0 ? speed : (m.downloadSpeed ?? 0),
           downloadedBytes: downloadedBytes,
           totalBytes: totalBytes.toInt(),
         );
+
+        // Persist on each percent tick so progress survives an app restart.
+        if (m.progress != newPercent) {
+          unawaited(box.put(id, updated.toJson()));
+        }
+        return updated;
       }
       return m;
     }).toList();
@@ -256,13 +296,16 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
   void _markAsFailed(String id, [String? error]) {
     print('Download failed for $id: ${error ?? 'unknown error'}');
     DownloadNotificationService.onDownloadError(id);
+    final box = Hive.box('models');
     state = state.map((m) {
       if (m.id == id) {
-        return m.copyWith(
+        final failed = m.copyWith(
           downloadStatus: 'error',
           progress: 0,
           errorMessage: error ?? 'Download failed. Tap to retry.',
         );
+        unawaited(box.put(id, failed.toJson()));
+        return failed;
       }
       return m;
     }).toList();
@@ -336,13 +379,16 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     await FileDownloader().cancelTaskWithId(id);
     
     // Reset state
+    final box = Hive.box('models');
     state = state.map((m) {
       if (m.id == id) {
-        return m.copyWith(
+        final cancelled = m.copyWith(
           downloadStatus: 'none',
           progress: 0,
           downloadSpeed: 0,
         );
+        unawaited(box.put(id, cancelled.toJson()));
+        return cancelled;
       }
       return m;
     }).toList();
