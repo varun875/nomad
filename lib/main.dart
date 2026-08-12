@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:home_widget/home_widget.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'l10n/app_localizations.dart';
 import 'features/onboarding/onboarding_page.dart';
 import 'features/chat/chat_screen.dart';
@@ -58,6 +59,7 @@ void main() async {
     Hive.openBox('creations'),
     Hive.openBox('nomad_code_projects'),
   ]);
+  await dotenv.load(fileName: '.env');
   final startup = await Future.wait<dynamic>([
     SharedPreferences.getInstance(),
     MemoryService().init(),

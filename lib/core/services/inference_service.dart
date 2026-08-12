@@ -253,9 +253,9 @@ class InferenceService {
         text: effectiveSystem,
       ));
 
-      int historyChars = 0;
       final maxHistoryChars = (contextSize * 3.5 * 0.55).round();
       final retainedHistory = trimHistoryForContext(history, maxHistoryChars);
+      int historyChars = 0;
       for (final turn in retainedHistory) {
         final role = turn['role'] ?? 'user';
         final content = turn['content'] ?? '';

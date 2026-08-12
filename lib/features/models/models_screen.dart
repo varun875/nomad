@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/services/model_service.dart';
 import '../../core/models/hf_model.dart';
+import '../../core/models/download_status.dart';
 import '../../core/providers/download_provider.dart';
 import '../../core/theme/nomad_theme.dart';
 import '../../core/widgets/nomad_widgets.dart';
@@ -48,7 +49,7 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
     final models = ref.read(downloadProvider);
     _downloadingIds.removeWhere(
       (id) => !models.any(
-          (m) => m.id == id && m.downloadStatus == 'downloading'),
+          (m) => m.id == id && m.downloadStatus == DownloadStatus.downloading),
     );
   }
 
@@ -78,7 +79,7 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
   Widget build(BuildContext context) {
     final models = ref.watch(downloadProvider);
     final downloading =
-        models.where((m) => m.downloadStatus == 'downloading').toList();
+        models.where((m) => m.downloadStatus == DownloadStatus.downloading).toList();
     final installed = models.where((m) => m.downloaded).toList();
     final usedFraction =
         _totalStorageGB > 0 ? _usedStorageGB / _totalStorageGB : 0.0;
@@ -208,7 +209,7 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
 }
 
   void _startDownload(HFModel model) {
-    final hasError = model.downloadStatus == 'error';
+    final hasError = model.downloadStatus == DownloadStatus.error;
     _downloadingIds.add(model.id);
     if (hasError) ref.read(downloadProvider.notifier).clearError(model.id);
     final url = ModelService.getDownloadUrl(model.id);
@@ -400,14 +401,43 @@ class _ModelCard extends StatelessWidget {
     return '$downloadedMB / $totalMB MB';
   }
 
+  /// Build the one-liner under the progress ring:
+  /// "42% · 12.3 MB/s · 1.2 / 3.1 GB · ~3 min left"
+  String _formatProgressLine() {
+    final parts = <String>['${model.progress}%'];
+    final speed = model.downloadSpeed;
+    if (speed != null && speed > 0) {
+      parts.add('${speed.toStringAsFixed(1)} MB/s');
+    }
+    parts.add(_formatDownloadedSize());
+    final eta = _formatEta();
+    if (eta != null) parts.add(eta);
+    return parts.join(' · ');
+  }
+
+  /// Estimated time remaining, or null when speed is unknown / zero.
+  String? _formatEta() {
+    final speed = model.downloadSpeed; // MB/s
+    if (speed == null || speed <= 0 || model.progress <= 0) return null;
+    final totalMB = model.sizeMB.toDouble();
+    final remainingMB = totalMB * (1.0 - model.progress / 100.0);
+    final secondsLeft = (remainingMB / speed).round();
+    if (secondsLeft <= 0) return null;
+    if (secondsLeft < 60) return '~${secondsLeft}s left';
+    if (secondsLeft < 3600) return '~${(secondsLeft / 60).round()} min left';
+    final h = secondsLeft ~/ 3600;
+    final m = (secondsLeft % 3600) ~/ 60;
+    return '~${h}h ${m}m left';
+  }
+
   @override
   Widget build(BuildContext context) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     final textTheme = Theme.of(context).textTheme;
     final loc = AppLocalizations.of(context)!;
     final isDownloaded = model.downloaded;
-    final isDownloading = model.downloadStatus == 'downloading';
-    final hasError = model.downloadStatus == 'error';
+    final isDownloading = model.downloadStatus == DownloadStatus.downloading;
+    final hasError = model.downloadStatus == DownloadStatus.error;
 
     IconData primaryIcon;
     if (isDownloaded) {
@@ -498,7 +528,7 @@ class _ModelCard extends StatelessWidget {
           if (isDownloading) ...[
             const SizedBox(height: 10),
             Text(
-              '${model.progress}%${model.downloadSpeed != null && model.downloadSpeed! > 0 ? ' · ${model.downloadSpeed!.toStringAsFixed(1)} MB/s' : ''} · ${_formatDownloadedSize()}',
+              _formatProgressLine(),
               style: textTheme.bodySmall
                   ?.copyWith(fontSize: 11, color: nomad.textSecondary),
             ),

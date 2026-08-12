@@ -121,6 +121,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       onTap: () => _toggleAssistant(!_isAssistantEnabled),
                     ),
                     const SizedBox(height: 28),
+                    const _SectionLabel(label: 'Downloads'),
+                    const SizedBox(height: 10),
+                    _StickerTile(
+                      title: 'Hugging Face Token',
+                      subtitle:
+                          'Optional - improves model download speed',
+                      icon: Icons.key_rounded,
+                      onTap: () => _showTokenDialog(context),
+                    ),
+                    const SizedBox(height: 28),
                     const _SectionLabel(label: 'Data'),
                     const SizedBox(height: 10),
                     _StickerTile(
@@ -148,6 +158,86 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
 }
+
+  Future<void> _showTokenDialog(BuildContext context) async {
+    final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
+    final textTheme = Theme.of(context).textTheme;
+    final loc = AppLocalizations.of(context)!;
+    final prefs = await SharedPreferences.getInstance();
+    final controller =
+        TextEditingController(text: prefs.getString('hf_api_token') ?? '');
+    var obscure = true;
+    await showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: nomad.surface,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(NomadRadii.dialog)),
+          title: Text('Hugging Face Token', style: textTheme.headlineMedium),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Paste a read-only token from huggingface.co/settings/tokens '
+                'to avoid Hugging Face\u2019s anonymous download throttle.',
+                style: textTheme.bodySmall,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                obscureText: obscure,
+                autocorrect: false,
+                enableSuggestions: false,
+                decoration: InputDecoration(
+                  hintText: 'hf_...',
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(NomadRadii.card)),
+                  suffixIcon: IconButton(
+                    icon: Icon(obscure
+                        ? Icons.visibility_rounded
+                        : Icons.visibility_off_rounded),
+                    onPressed: () => setDialogState(() => obscure = !obscure),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                HapticFeedback.lightImpact();
+                Navigator.pop(context);
+              },
+              child: Text(loc.cancel,
+                  style:
+                      textTheme.bodyMedium?.copyWith(color: nomad.textSecondary)),
+            ),
+            TextButton(
+              onPressed: () {
+                HapticFeedback.lightImpact();
+                prefs.remove('hf_api_token');
+                Navigator.pop(context);
+              },
+              child: Text('Clear',
+                  style: textTheme.bodyMedium?.copyWith(color: Colors.red)),
+            ),
+            TextButton(
+              onPressed: () {
+                HapticFeedback.lightImpact();
+                prefs.setString('hf_api_token', controller.text.trim());
+                Navigator.pop(context);
+              },
+              child: Text(loc.save,
+                  style: textTheme.bodyMedium
+                      ?.copyWith(color: nomad.textPrimary)),
+            ),
+          ],
+        ),
+      ),
+    );
+    controller.dispose();
+  }
 
   void _confirmClearCache(BuildContext context, TextTheme textTheme) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;

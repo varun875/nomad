@@ -22,9 +22,10 @@ class ModelService {
     HFModel(
       id: 'nomad-steady-gemma4-e2b',
       name: 'Nomad Steady',
-      baseModel: 'Gemma 4 E2B',
-      description: 'Compact vision model with image understanding. Great for balanced performance and multimodal tasks.',
-      sizeMB: 3100,
+      baseModel: 'Gemma 4 E2B QAT',
+      description: 'Compact vision model with image understanding. QAT-tuned 4-bit delivers near-Q8 quality at ~2.6GB using less RAM - great for balanced performance and multimodal tasks on mid-range devices.',
+      sizeMB: 2499,
+      totalBytes: 2620370976,
       requiredRAM: 5,
       speed: 4.2,
       quality: 4.6,
@@ -33,9 +34,10 @@ class ModelService {
     HFModel(
       id: 'nomad-smart-gemma4-e4b',
       name: 'Nomad Smart',
-      baseModel: 'Gemma 4 E4B',
-      description: 'Powerful vision model with advanced reasoning. Excels at complex multimodal understanding and deep analysis.',
-      sizeMB: 5100,
+      baseModel: 'Gemma 4 E4B (e1)',
+      description: 'Finn Technologies e1 - a fine-tuned Gemma 4 E4B with advanced reasoning across math, physics, CS, biology, chemistry, philosophy, and linguistics. Excels at complex multimodal understanding and deep analysis.',
+      sizeMB: 5300,
+      totalBytes: 5302272800,
       requiredRAM: 7,
       speed: 3.5,
       quality: 5.0,
@@ -106,7 +108,7 @@ class ModelService {
   /// touching platform channels.
   ///
   /// 3GB: Only Nomad Lite
-  /// 5GB: Nomad Lite + Nomad Steady (Gemma 4 E2B)
+  /// 5GB: Nomad Lite + Nomad Steady (Gemma 4 E2B QAT)
   /// 7GB+: All three
   static List<HFModel> filterByRam(List<HFModel> models, int ramGB) {
     return models.where((m) => m.requiredRAM <= ramGB).toList();
@@ -139,9 +141,9 @@ class ModelService {
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf';
       case 'nomad-steady-gemma4-e2b':
-        return 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf';
+        return 'https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/main/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf';
       case 'nomad-smart-gemma4-e4b':
-        return 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf';
+        return 'https://huggingface.co/Finn-Technologies/e1/resolve/main/e1.Q4_K_M.gguf';
       default:
         return '';
     }
@@ -152,9 +154,9 @@ class ModelService {
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-F16.gguf';
       case 'nomad-steady-gemma4-e2b':
-        return 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf';
+        return 'https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/main/mmproj-F16.gguf';
       case 'nomad-smart-gemma4-e4b':
-        return 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/mmproj-F16.gguf';
+        return 'https://huggingface.co/Finn-Technologies/e1/resolve/main/mmproj-e1.gguf';
       default:
         return null;
     }

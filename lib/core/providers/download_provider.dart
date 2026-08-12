@@ -4,7 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:background_downloader/background_downloader.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../models/hf_model.dart';
+import '../models/download_status.dart';
 import '../services/model_service.dart';
 import '../services/inference_service.dart';
 import '../services/download_notification_service.dart';
@@ -92,7 +95,7 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
   /// either finished or failed — verify the file and settle it.
   Future<void> _reconcileStaleDownloads() async {
     final stale =
-        state.where((m) => m.downloadStatus == 'downloading').toList();
+        state.where((m) => m.downloadStatus == DownloadStatus.downloading).toList();
     for (final model in stale) {
       final task = await FileDownloader().taskForId(model.id);
       if (task != null) continue; // Still alive; resumeFromBackground handles it.
@@ -127,6 +130,20 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     }
 
     final filename = '${model.id.replaceAll('/', '_')}.gguf';
+
+    // Optional Hugging Face token: authenticates the request so HF doesn't
+    // apply the anonymous per-IP throttle, which can improve download speed.
+    // Source priority: .env (HF_API_TOKEN) -> settings field (hf_api_token).
+    final envToken = dotenv.env['HF_API_TOKEN']?.trim();
+    final prefs = await SharedPreferences.getInstance();
+    final prefToken = prefs.getString('hf_api_token')?.trim();
+    final token = (envToken != null && envToken.isNotEmpty)
+        ? envToken
+        : prefToken;
+    final headers = (token != null && token.isNotEmpty)
+        ? {'Authorization': 'Bearer $token'}
+        : null;
+
     final task = DownloadTask(
       url: url,
       filename: filename,
@@ -138,12 +155,13 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
       taskId: model.id,
       displayName: model.name,
       priority: 10, // High priority for faster downloading
+      headers: headers,
     );
 
     // Preserve existing progress if resuming, otherwise start at 0
     final currentProgress = model.progress;
     final updatedModel = model.copyWith(
-      downloadStatus: 'downloading',
+      downloadStatus: DownloadStatus.downloading,
       progress: currentProgress,
     );
 
@@ -171,7 +189,7 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
       state = state.map((m) {
         if (m.id == model.id) {
           return m.copyWith(
-            downloadStatus: 'error',
+            downloadStatus: DownloadStatus.error,
             progress: 0,
             errorMessage: 'Failed to start download. Check network connection.',
           );
@@ -200,15 +218,16 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
         );
 
         final updated = m.copyWith(
-          downloadStatus: 'downloading',
+          downloadStatus: DownloadStatus.downloading,
           progress: newPercent,
           downloadSpeed: speed >= 0 ? speed : (m.downloadSpeed ?? 0),
           downloadedBytes: downloadedBytes,
           totalBytes: totalBytes.toInt(),
         );
 
-        // Persist on each percent tick so progress survives an app restart.
-        if (m.progress != newPercent) {
+        // Persist every 5% so progress survives an app restart without
+        // excessive flash I/O on mobile (was every 1% = ~100 writes).
+        if (m.progress != newPercent && newPercent % 5 == 0) {
           unawaited(box.put(id, updated.toJson()));
         }
         return updated;
@@ -217,7 +236,7 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     }).toList();
   }
 
-  void _markAsCompleted(String id) async {
+  Future<void> _markAsCompleted(String id) async {
     final matches = state.where((m) => m.id == id);
     if (matches.isEmpty) return;
     final model = matches.first;
@@ -264,7 +283,7 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     final completedModel = model.copyWith(
       downloaded: true,
       progress: 100,
-      downloadStatus: 'completed',
+      downloadStatus: DownloadStatus.completed,
       localPath: modelPath,
     );
 
@@ -293,14 +312,14 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     }
   }
 
-  void _markAsFailed(String id, [String? error]) {
+  Future<void> _markAsFailed(String id, [String? error]) async {
     print('Download failed for $id: ${error ?? 'unknown error'}');
     DownloadNotificationService.onDownloadError(id);
     final box = Hive.box('models');
     state = state.map((m) {
       if (m.id == id) {
         final failed = m.copyWith(
-          downloadStatus: 'error',
+          downloadStatus: DownloadStatus.error,
           progress: 0,
           errorMessage: error ?? 'Download failed. Tap to retry.',
         );
@@ -348,7 +367,7 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     state = state
         .map((m) => m.id == id
             ? m.copyWith(
-                downloadStatus: 'none',
+                downloadStatus: DownloadStatus.none,
                 downloaded: false,
                 localPath: null,
                 progress: 0,
@@ -362,7 +381,7 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     state = state.map((m) {
       if (m.id == id) {
         return m.copyWith(
-          downloadStatus: 'none',
+          downloadStatus: DownloadStatus.none,
           errorMessage: null,
           progress: 0,
           clearError: true,
@@ -383,7 +402,7 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     state = state.map((m) {
       if (m.id == id) {
         final cancelled = m.copyWith(
-          downloadStatus: 'none',
+          downloadStatus: DownloadStatus.none,
           progress: 0,
           downloadSpeed: 0,
         );

@@ -1,3 +1,5 @@
+import 'download_status.dart';
+
 class HFModel {
   final String id;
   final String name;
@@ -14,7 +16,7 @@ class HFModel {
   final bool downloaded;
   final int progress; // 0-100
   final String? localPath;
-  final String? downloadStatus; // 'none', 'downloading', 'paused', 'completed', 'error'
+  final DownloadStatus downloadStatus;
   final double? downloadSpeed; // in MB/s
   final int? downloadedBytes;
   final int? totalBytes;
@@ -36,7 +38,7 @@ class HFModel {
     this.downloaded = false,
     this.progress = 0,
     this.localPath,
-    this.downloadStatus = 'none',
+    this.downloadStatus = DownloadStatus.none,
     this.downloadSpeed,
     this.downloadedBytes,
     this.totalBytes,
@@ -59,7 +61,7 @@ class HFModel {
     'downloaded': downloaded,
     'progress': progress,
     'localPath': localPath,
-    'downloadStatus': downloadStatus,
+    'downloadStatus': downloadStatus.toJsonString(),
     'downloadSpeed': downloadSpeed,
     'downloadedBytes': downloadedBytes,
     'totalBytes': totalBytes,
@@ -82,7 +84,7 @@ class HFModel {
     downloaded: json['downloaded'] ?? false,
     progress: json['progress'] ?? 0,
     localPath: json['localPath'],
-    downloadStatus: json['downloadStatus'] ?? 'none',
+    downloadStatus: DownloadStatus.fromString(json['downloadStatus']),
     downloadSpeed: (json['downloadSpeed'] as num?)?.toDouble(),
     downloadedBytes: json['downloadedBytes'],
     totalBytes: json['totalBytes'],
@@ -105,7 +107,7 @@ class HFModel {
     bool? downloaded,
     int? progress,
     String? localPath,
-    String? downloadStatus,
+    DownloadStatus? downloadStatus,
     double? downloadSpeed,
     int? downloadedBytes,
     int? totalBytes,
