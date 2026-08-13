@@ -131,7 +131,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   final SpeechToText _stt = SpeechToText();
   final TtsService _tts = TtsService();
   String _liveTranscript = '';
-  double _soundLevel = 0.0;
+  final ValueNotifier<double> _soundLevel = ValueNotifier(0.0);
 
   // Drives the chat-composer <-> live-voice morph (0 = chat, 1 = live).
   late final AnimationController _modeController;
@@ -863,9 +863,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
     await _stt.listen(
       onResult: _onSttResult,
-      onSoundLevelChange: (level) {
-        if (mounted) setState(() => _soundLevel = level);
-      },
+      onSoundLevelChange: (level) => _soundLevel.value = level,
       listenOptions: SpeechListenOptions(
         partialResults: true,
         cancelOnError: true,
@@ -936,6 +934,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _focusNode.dispose();
     _streamingTextNotifier.dispose();
     _modeController.dispose();
+    _soundLevel.dispose();
     _stt.stop();
     _tts.stop();
 
@@ -1101,6 +1100,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                                                 width: 72,
                                                 height: 72,
                                                 fit: BoxFit.cover,
+                                                cacheWidth: 72,
+                                                cacheHeight: 72,
                                               ),
                                             ),
                                             Positioned(
@@ -1173,9 +1174,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                                 ),
                             ],
                           ),
-                          LayoutBuilder(
+                          ValueListenableBuilder<double>(
+                            valueListenable: _soundLevel,
+                            builder: (context, level, _) => LayoutBuilder(
                             builder: (context, constraints) {
-                              final rawLevel = _soundLevel.clamp(-50.0, 50.0);
+                              final rawLevel = level.clamp(-50.0, 50.0);
                               final normalizedLevel = math
                                   .max(0.0, (rawLevel + 30.0) / 50.0)
                                   .clamp(0.0, 1.0);
@@ -1489,6 +1492,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                                 },
                               );
                             },
+                          ),
                           ),
                         ],
                       ),
@@ -1848,6 +1852,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                       width: 180,
                       height: 180,
                       fit: BoxFit.cover,
+                      cacheWidth: 180,
+                      cacheHeight: 180,
                     ),
                   );
                 }).toList(),

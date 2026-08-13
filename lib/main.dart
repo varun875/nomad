@@ -62,8 +62,6 @@ void main() async {
   await dotenv.load(fileName: '.env');
   final startup = await Future.wait<dynamic>([
     SharedPreferences.getInstance(),
-    MemoryService().init(),
-    DownloadNotificationService.initialize(),
     PerformanceService.instance.init(),
   ]);
   final prefs = startup.first as SharedPreferences;
@@ -103,6 +101,11 @@ void main() async {
   }
 
   runApp(ProviderScope(child: NomadApp(onboarded: onboarded)));
+
+  // Defer non-critical init until after the first frame so cold start doesn't
+  // block on disk/notification I/O; both are needed only on later interaction.
+  unawaited(MemoryService().init());
+  unawaited(DownloadNotificationService.initialize());
 }
 
 class NomadTransitionPage extends CustomTransitionPage {

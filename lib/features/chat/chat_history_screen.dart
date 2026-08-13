@@ -22,6 +22,7 @@ class ChatHistoryScreen extends ConsumerStatefulWidget {
 
 class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
   String? _currentConversationId;
+  final Map<String, GlobalKey> _conversationKeys = {};
 
   void _startNewChat() {
     setState(() => _currentConversationId = null);
@@ -436,13 +437,14 @@ class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
                       itemBuilder: (context, index) {
                         final conv = conversations[index];
                         final isSelected = _currentConversationId == conv.id;
-                        final itemKey = GlobalKey();
+                        final itemKey =
+                            _conversationKeys.putIfAbsent(conv.id, GlobalKey.new);
                         return GestureDetector(
                           onTap: () => _selectConversation(conv),
                           onLongPress: () {
                             HapticFeedback.heavyImpact();
                             final renderBox = itemKey.currentContext
-                                    ?.findRenderObject() as RenderBox?;
+                                ?.findRenderObject() as RenderBox?;
                             if (renderBox == null) return;
                             _showContextMenu(context, renderBox, conv);
                           },
