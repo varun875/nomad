@@ -43,6 +43,13 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    // Skip lint on release builds: it adds several minutes and its caches keep
+    // locking up on low-disk machines. Lint still runs on debug/CI via lintDebug.
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
 }
 
 flutter {
