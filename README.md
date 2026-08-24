@@ -1,5 +1,7 @@
 # Nomad
 
+> **Derived from [Finn Technologies Flux](https://github.com/Finn-Technologies/flux)** — Nomad builds on Flux's offline-first architecture, retaining its llamadart engine, vision pipeline, and agentic search while adding P-core-aware threading, lazy vision loading, and low-RAM hardening for 4–6 GB devices.
+
 ## Overview
 
 Nomad is a fully offline AI assistant for Android. It runs quantized LLMs directly on your device using llamadart (llama.cpp bindings). No accounts, no cloud, no data leaving your phone — ever.
@@ -24,11 +26,10 @@ Attach an image with the paperclip button and Nomad describes, reads, and reason
 
 ### Web Search (Agentic)
 
-Toggle the globe icon and Nomad becomes an agent — it decides when to search, calls a `web_search` tool, reads the results, and answers based on what it found. Plug in your own key or URL:
+Toggle the globe icon and Nomad becomes an agent — it decides when to search, calls a `web_search` tool, reads the results, and answers based on what it found:
 
-- **Brave Search** — bring your free API key (highest quality results)
+- **DuckDuckGo** — zero-config, free, no key needed (default)
 - **SearXNG** — self-host an instance, point Nomad at your URL
-- **DuckDuckGo** — zero-config fallback, no key needed
 
 When search is off, everything runs 100% offline.
 
@@ -105,7 +106,7 @@ lib/
 │   ├── services/
 │   │   ├── inference_service.dart   # llama.cpp streaming inference, threading
 │   │   ├── model_service.dart       # RAM-filtered model catalog
-│   │   ├── search_service.dart      # Pluggable Brave/SearXNG/DuckDuckGo
+│   │   ├── search_service.dart      # DuckDuckGo / SearXNG (free)
 │   │   ├── performance_service.dart # Device-tier detection for effects/perf
 │   │   ├── memory_service.dart      # Local recall store
 │   │   └── tts_service.dart         # On-device speech
@@ -136,7 +137,7 @@ lib/
 | Local DB    | Hive + SharedPreferences        |
 | AI Engine   | llama.cpp via llamadart         |
 | Downloads   | background_downloader           |
-| Search      | Brave / SearXNG / DuckDuckGo    |
+| Search      | DuckDuckGo / SearXNG (free)       |
 | WebView     | webview_flutter (creation preview) |
 | Fonts       | Instrument Sans (Google Fonts)  |
 | Icons       | Custom SVGs + Material Symbols  |
@@ -150,25 +151,11 @@ Nomad is built with privacy as a hard requirement:
 - **No telemetry** — zero analytics, zero tracking
 - **No internet needed** — fully offline when search is toggled off
 
-## Roadmap
-
-- [x] Offline AI chat with 3 model sizes
-- [x] Agentic web search with pluggable providers
-- [x] HTML/CSS/JS app builder (Creations)
-- [x] Conversation history with model restoration
-- [x] Context window compaction
-- [x] Vision / image attachment support
-- [x] Voice live mode (STT + TTS)
-- [x] 6-language localization
-- [x] Performance: big-core threading, lazy vision, throttled streaming, continuations
-- [ ] Export conversations (JSON / text)
-- [ ] iOS version
-
 ## What's New in v0.1.0
 
 - **Gemma 4 models** — Steady (Gemma 4 E2B QAT) and Smart (e1, a Gemma 4 E4B fine-tune) replace the previous Qwen general models with native vision and mmproj auto-download
 - **Vision for all models** — Lite (Qwen 3.5 0.8B), Steady, and Smart all support image attachments
-- **Agentic web search** — the model decides when to search via tool calling; Brave/SearXNG/DuckDuckGo providers
+- **Agentic web search** — the model decides when to search via tool calling; DuckDuckGo / SearXNG (free)
 - **MediaTek performance fix** — generation threads are now sized to big cores, eliminating a ~100× decode collapse on A76/A55 chipsets
 - **Low-RAM hardening** — serialized model loads, lazy vision encoder on 4–6 GB phones, quantized KV cache
 - **Faster cold start & streaming** — deferred service init and scoped rebuilds keep low-end devices smooth
