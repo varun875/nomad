@@ -1,4 +1,4 @@
-package com.finn.nomad
+package com.varun.nomad
 
 import android.appwidget.AppWidgetManager
 import android.content.Context

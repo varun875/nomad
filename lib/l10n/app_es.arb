@@ -101,5 +101,9 @@
   "justNow": "Justo ahora",
   "minutesAgo": "hace {minutes}m",
   "hoursAgo": "hace {hours}h",
-  "daysAgo": "hace {days}d"
+  "daysAgo": "hace {days}d",
+  "modelDoesNotSupportImageInput": "Este modelo no admite imágenes.",
+  "@modelDoesNotSupportImageInput": {
+    "description": "Shown when the selected model cannot process image attachments"
+  }
 }

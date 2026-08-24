@@ -24,8 +24,7 @@ class AppLocalizationsDe extends AppLocalizations {
   String get models => 'Modelle';
 
   @override
-  String get downloadAndManageModels =>
-      'KI-Modelle herunterladen und verwalten';
+  String get downloadAndManageModels => 'KI-Modelle herunterladen und verwalten';
 
   @override
   String get clearCache => 'Cache leeren';
@@ -40,15 +39,13 @@ class AppLocalizationsDe extends AppLocalizations {
   String get version => 'Version';
 
   @override
-  String get yourPrivateAI =>
-      'Ihr privater KI-Assistent, der lokal auf Ihrem Gerät läuft. Ihre Daten verbleiben auf Ihrem Telefon — kein Konto erforderlich.';
+  String get yourPrivateAI => 'Ihr privater KI-Assistent, der lokal auf Ihrem Gerät läuft. Ihre Daten verbleiben auf Ihrem Telefon — kein Konto erforderlich.';
 
   @override
   String get selectModel => 'Modell auswählen';
 
   @override
-  String get noModelsDownloaded =>
-      'Keine Modelle heruntergeladen. Gehen Sie zur Bibliothek zum Herunterladen.';
+  String get noModelsDownloaded => 'Keine Modelle heruntergeladen. Gehen Sie zur Bibliothek zum Herunterladen.';
 
   @override
   String get poweredBy => 'Betrieben von';
@@ -66,8 +63,7 @@ class AppLocalizationsDe extends AppLocalizations {
   String get clearCacheQuestion => 'Cache leeren?';
 
   @override
-  String get clearCacheMessage =>
-      'Dies entfernt nur temporäre Dateien. Ihre heruntergeladenen Modelle und Chats sind nicht betroffen.';
+  String get clearCacheMessage => 'Dies entfernt nur temporäre Dateien. Ihre heruntergeladenen Modelle und Chats sind nicht betroffen.';
 
   @override
   String get deleteModelQuestion => 'Modell löschen?';
@@ -100,8 +96,7 @@ class AppLocalizationsDe extends AppLocalizations {
   String get noModelsYet => 'Noch keine Modelle';
 
   @override
-  String get downloadModelToStart =>
-      'Laden Sie ein Modell herunter, um zu beginnen';
+  String get downloadModelToStart => 'Laden Sie ein Modell herunter, um zu beginnen';
 
   @override
   String get cancelDownload => 'Download abbrechen';
@@ -125,15 +120,13 @@ class AppLocalizationsDe extends AppLocalizations {
   String get downloadAndContinue => 'Herunterladen und fortfahren';
 
   @override
-  String get highSpeedConnectionRecommended =>
-      'Hochgeschwindigkeitsverbindung empfohlen.';
+  String get highSpeedConnectionRecommended => 'Hochgeschwindigkeitsverbindung empfohlen.';
 
   @override
   String get noModelSelected => 'Kein Modell ausgewählt';
 
   @override
-  String get noModelSelectedMessage =>
-      'Es ist kein Modell ausgewählt oder heruntergeladen. Bitte besuchen Sie die Bibliothek, um zuerst ein Modell herunterzuladen.';
+  String get noModelSelectedMessage => 'Es ist kein Modell ausgewählt oder heruntergeladen. Bitte besuchen Sie die Bibliothek, um zuerst ein Modell herunterzuladen.';
 
   @override
   String get messageNomad => 'Nachricht an Nomad...';
@@ -181,22 +174,19 @@ class AppLocalizationsDe extends AppLocalizations {
   String get weValuePrivacy => 'Wir schätzen Ihre Privatsphäre';
 
   @override
-  String get privacyDescription =>
-      'Wir haben Nomad so konzipiert, dass lokale KI-Modelle verwendet werden, damit Ihre Daten nicht an Unternehmen gelangen, nicht einmal an uns.';
+  String get privacyDescription => 'Wir haben Nomad so konzipiert, dass lokale KI-Modelle verwendet werden, damit Ihre Daten nicht an Unternehmen gelangen, nicht einmal an uns.';
 
   @override
   String get fullyOffline => 'Vollständig offline';
 
   @override
-  String get offlineDescription =>
-      'Da wir lokale KI-Modelle verwenden, funktioniert Nomad vollständig offline, sodass Sie auch ohne Netzabdeckung Fragen stellen können.';
+  String get offlineDescription => 'Da wir lokale KI-Modelle verwenden, funktioniert Nomad vollständig offline, sodass Sie auch ohne Netzabdeckung Fragen stellen können.';
 
   @override
   String get chooseModel => 'Wählen Sie ein Modell zum Herunterladen';
 
   @override
-  String get chooseModelDescription =>
-      'Nomad empfiehlt Modelle, die für Ihr Gerät optimiert sind, um sicherzustellen, dass sie ordnungsgemäß funktionieren.';
+  String get chooseModelDescription => 'Nomad empfiehlt Modelle, die für Ihr Gerät optimiert sind, um sicherzustellen, dass sie ordnungsgemäß funktionieren.';
 
   @override
   String get thatsIt => 'Das war\'s. Nomad ist bereit!';
@@ -223,8 +213,7 @@ class AppLocalizationsDe extends AppLocalizations {
   String get nomadCreativeRequired => 'Nomad Creative erforderlich';
 
   @override
-  String get installCreativeModel =>
-      'Installieren Sie das Creative-Modell, um zu erstellen.';
+  String get installCreativeModel => 'Installieren Sie das Creative-Modell, um zu erstellen.';
 
   @override
   String get installNomadCreative => 'Nomad Creative installieren';
@@ -251,12 +240,10 @@ class AppLocalizationsDe extends AppLocalizations {
   String get nomadCreativeNotInstalled => 'Nomad Creative ist nicht installiert.';
 
   @override
-  String get installCreativeToUseCreations =>
-      'Bitte installieren Sie es über Modelle, um Kreationen zu verwenden.';
+  String get installCreativeToUseCreations => 'Bitte installieren Sie es über Modelle, um Kreationen zu verwenden.';
 
   @override
-  String get modelArchitectureUnsupported =>
-      'Modellarchitektur nicht unterstützt. Bitte versuchen Sie vorerst ein Standard-Gemma-Modell.';
+  String get modelArchitectureUnsupported => 'Modellarchitektur nicht unterstützt. Bitte versuchen Sie vorerst ein Standard-Gemma-Modell.';
 
   @override
   String get inferenceError => 'Inferenzfehler';
@@ -299,8 +286,7 @@ class AppLocalizationsDe extends AppLocalizations {
   }
 
   @override
-  String get selectOptimizedModel =>
-      'Wählen Sie das optimierteste Modell für Ihr Gerät.';
+  String get selectOptimizedModel => 'Wählen Sie das optimierteste Modell für Ihr Gerät.';
 
   @override
   String get creationNotFound => 'Kreation nicht gefunden';
@@ -328,4 +314,7 @@ class AppLocalizationsDe extends AppLocalizations {
   String daysAgo(Object days) {
     return 'vor ${days}d';
   }
+
+  @override
+  String get modelDoesNotSupportImageInput => 'Dieses Modell unterstützt keine Bilder.';
 }

@@ -39,15 +39,13 @@ class AppLocalizationsEs extends AppLocalizations {
   String get version => 'Versión';
 
   @override
-  String get yourPrivateAI =>
-      'Tu asistente de IA privado que se ejecuta localmente en tu dispositivo. Tus datos permanecen en tu teléfono — no se necesita cuenta.';
+  String get yourPrivateAI => 'Tu asistente de IA privado que se ejecuta localmente en tu dispositivo. Tus datos permanecen en tu teléfono — no se necesita cuenta.';
 
   @override
   String get selectModel => 'Seleccionar Modelo';
 
   @override
-  String get noModelsDownloaded =>
-      'No hay modelos descargados. Ve a la Biblioteca para descargar.';
+  String get noModelsDownloaded => 'No hay modelos descargados. Ve a la Biblioteca para descargar.';
 
   @override
   String get poweredBy => 'Desarrollado por';
@@ -65,8 +63,7 @@ class AppLocalizationsEs extends AppLocalizations {
   String get clearCacheQuestion => '¿Limpiar caché?';
 
   @override
-  String get clearCacheMessage =>
-      'Esto solo elimina archivos temporales. Tus modelos descargados y chats no se verán afectados.';
+  String get clearCacheMessage => 'Esto solo elimina archivos temporales. Tus modelos descargados y chats no se verán afectados.';
 
   @override
   String get deleteModelQuestion => '¿Eliminar modelo?';
@@ -123,15 +120,13 @@ class AppLocalizationsEs extends AppLocalizations {
   String get downloadAndContinue => 'Descargar y continuar';
 
   @override
-  String get highSpeedConnectionRecommended =>
-      'Se recomienda conexión de alta velocidad.';
+  String get highSpeedConnectionRecommended => 'Se recomienda conexión de alta velocidad.';
 
   @override
   String get noModelSelected => 'Ningún modelo seleccionado';
 
   @override
-  String get noModelSelectedMessage =>
-      'No hay ningún modelo seleccionado o descargado. Visita la Biblioteca para descargar uno primero.';
+  String get noModelSelectedMessage => 'No hay ningún modelo seleccionado o descargado. Visita la Biblioteca para descargar uno primero.';
 
   @override
   String get messageNomad => 'Mensaje a Nomad...';
@@ -179,22 +174,19 @@ class AppLocalizationsEs extends AppLocalizations {
   String get weValuePrivacy => 'Valoramos tu privacidad';
 
   @override
-  String get privacyDescription =>
-      'Diseñamos Nomad para usar modelos de IA locales, por lo que tus datos no van a corporaciones, ni siquiera a nosotros.';
+  String get privacyDescription => 'Diseñamos Nomad para usar modelos de IA locales, por lo que tus datos no van a corporaciones, ni siquiera a nosotros.';
 
   @override
   String get fullyOffline => 'Totalmente offline';
 
   @override
-  String get offlineDescription =>
-      'Como usamos modelos de IA locales, Nomad funciona completamente offline, así que puedes hacer preguntas incluso sin cobertura.';
+  String get offlineDescription => 'Como usamos modelos de IA locales, Nomad funciona completamente offline, así que puedes hacer preguntas incluso sin cobertura.';
 
   @override
   String get chooseModel => 'Elige un modelo para descargar';
 
   @override
-  String get chooseModelDescription =>
-      'Nomad recomienda modelos optimizados para tu dispositivo, asegurando que funcionen correctamente.';
+  String get chooseModelDescription => 'Nomad recomienda modelos optimizados para tu dispositivo, asegurando que funcionen correctamente.';
 
   @override
   String get thatsIt => 'Eso es todo. ¡Nomad está listo!';
@@ -221,8 +213,7 @@ class AppLocalizationsEs extends AppLocalizations {
   String get nomadCreativeRequired => 'Nomad Creative requerido';
 
   @override
-  String get installCreativeModel =>
-      'Instala el modelo Creative para empezar a crear.';
+  String get installCreativeModel => 'Instala el modelo Creative para empezar a crear.';
 
   @override
   String get installNomadCreative => 'Instalar Nomad Creative';
@@ -249,12 +240,10 @@ class AppLocalizationsEs extends AppLocalizations {
   String get nomadCreativeNotInstalled => 'Nomad Creative no está instalado.';
 
   @override
-  String get installCreativeToUseCreations =>
-      'Instálalo desde Modelos para usar Creaciones.';
+  String get installCreativeToUseCreations => 'Instálalo desde Modelos para usar Creaciones.';
 
   @override
-  String get modelArchitectureUnsupported =>
-      'Arquitectura de modelo no compatible. Por favor, prueba un modelo Gemma estándar por ahora.';
+  String get modelArchitectureUnsupported => 'Arquitectura de modelo no compatible. Por favor, prueba un modelo Gemma estándar por ahora.';
 
   @override
   String get inferenceError => 'Error de inferencia';
@@ -297,8 +286,7 @@ class AppLocalizationsEs extends AppLocalizations {
   }
 
   @override
-  String get selectOptimizedModel =>
-      'Selecciona el modelo más optimizado para tu dispositivo.';
+  String get selectOptimizedModel => 'Selecciona el modelo más optimizado para tu dispositivo.';
 
   @override
   String get creationNotFound => 'Creación no encontrada';
@@ -326,4 +314,7 @@ class AppLocalizationsEs extends AppLocalizations {
   String daysAgo(Object days) {
     return 'hace ${days}d';
   }
+
+  @override
+  String get modelDoesNotSupportImageInput => 'Este modelo no admite imágenes.';
 }

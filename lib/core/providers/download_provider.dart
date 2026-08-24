@@ -4,8 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:background_downloader/background_downloader.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import '../models/hf_model.dart';
 import '../models/download_status.dart';
 import '../services/model_service.dart';
@@ -131,19 +129,9 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
 
     final filename = '${model.id.replaceAll('/', '_')}.gguf';
 
-    // Optional Hugging Face token: authenticates the request so HF doesn't
-    // apply the anonymous per-IP throttle, which can improve download speed.
-    // Source priority: .env (HF_API_TOKEN) -> settings field (hf_api_token).
-    final envToken = dotenv.env['HF_API_TOKEN']?.trim();
-    final prefs = await SharedPreferences.getInstance();
-    final prefToken = prefs.getString('hf_api_token')?.trim();
-    final token = (envToken != null && envToken.isNotEmpty)
-        ? envToken
-        : prefToken;
-    final headers = (token != null && token.isNotEmpty)
-        ? {'Authorization': 'Bearer $token'}
-        : null;
-
+    // Flux-style: direct public HF CDN URL, no Authorization header.
+    // All Nomad models are on public Unsloth/Finn repos (resolve/main),
+    // so anonymous CloudFront is fastest - no token throttle or extra hop.
     final task = DownloadTask(
       url: url,
       filename: filename,
@@ -155,7 +143,6 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
       taskId: model.id,
       displayName: model.name,
       priority: 10, // High priority for faster downloading
-      headers: headers,
     );
 
     // Preserve existing progress if resuming, otherwise start at 0

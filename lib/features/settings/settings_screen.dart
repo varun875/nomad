@@ -10,6 +10,7 @@ import '../../core/constants/app_version.dart';
 import '../../core/theme/nomad_theme.dart';
 import '../../core/widgets/nomad_widgets.dart';
 import '../../core/widgets/nomad_animations.dart';
+import '../../core/services/inference_service.dart';
 import '../../l10n/app_localizations.dart';
 
 /// Settings — monochrome, borderless redesign.
@@ -23,6 +24,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _showTokenSpeed = false;
   bool _isAssistantEnabled = false;
+  int? _threadOverride;
 
   @override
   void initState() {
@@ -36,6 +38,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       setState(() {
         _showTokenSpeed = prefs.getBool('showTokenSpeed') ?? false;
         _isAssistantEnabled = prefs.getBool('isAssistantEnabled') ?? false;
+        _threadOverride = prefs.getInt(
+          InferenceService.generationThreadsPreference,
+        );
       });
     }
   }
@@ -55,6 +60,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
     
     // In a real implementation, we would trigger platform-specific code here
     // for Android's ACTION_VOICE_ASSISTANT_SETTINGS or similar.
+  }
+
+  Future<void> _chooseDecodeThreads() async {
+    final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
+    final textTheme = Theme.of(context).textTheme;
+    final selectedValue = await showDialog<int>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: nomad.surface,
+        title: Text('Decode Threads', style: textTheme.headlineMedium),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final option in <int?>[null, 2, 4, 6, 8])
+              RadioListTile<int>(
+                value: option ?? 0,
+                groupValue: _threadOverride ?? 0,
+                title: Text(option == null ? 'Auto' : '$option threads'),
+                onChanged: (value) => Navigator.pop(dialogContext, value),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (selectedValue == null) return;
+    final selected = selectedValue == 0 ? null : selectedValue;
+    if (selected == null && _threadOverride == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (selected == null) {
+      await prefs.remove(InferenceService.generationThreadsPreference);
+    } else {
+      await prefs.setInt(
+        InferenceService.generationThreadsPreference,
+        selected,
+      );
+    }
+    await InferenceService().unloadModel();
+    if (mounted) {
+      setState(() => _threadOverride = selected);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Thread profile applied on next message')),
+      );
+    }
   }
 
   @override
@@ -110,6 +159,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     const SizedBox(height: 16),
                     _StickerTile(
+                      title: 'Decode Threads',
+                      subtitle: _threadOverride == null
+                          ? 'Auto'
+                          : '${_threadOverride!} threads · reloads model',
+                      icon: Icons.tune_rounded,
+                      showChevron: true,
+                      onTap: _chooseDecodeThreads,
+                    ),
+                    const SizedBox(height: 16),
+                    _StickerTile(
                       title: 'Digital Assistant',
                       subtitle: 'Use Nomad as your default assistant (Android)',
                       icon: Icons.assistant_rounded,
@@ -119,16 +178,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         onChanged: _toggleAssistant,
                       ),
                       onTap: () => _toggleAssistant(!_isAssistantEnabled),
-                    ),
-                    const SizedBox(height: 28),
-                    const _SectionLabel(label: 'Downloads'),
-                    const SizedBox(height: 10),
-                    _StickerTile(
-                      title: 'Hugging Face Token',
-                      subtitle:
-                          'Optional - improves model download speed',
-                      icon: Icons.key_rounded,
-                      onTap: () => _showTokenDialog(context),
                     ),
                     const SizedBox(height: 28),
                     const _SectionLabel(label: 'Data'),
@@ -158,86 +207,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
 }
-
-  Future<void> _showTokenDialog(BuildContext context) async {
-    final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
-    final textTheme = Theme.of(context).textTheme;
-    final loc = AppLocalizations.of(context)!;
-    final prefs = await SharedPreferences.getInstance();
-    final controller =
-        TextEditingController(text: prefs.getString('hf_api_token') ?? '');
-    var obscure = true;
-    await showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          backgroundColor: nomad.surface,
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(NomadRadii.dialog)),
-          title: Text('Hugging Face Token', style: textTheme.headlineMedium),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'Paste a read-only token from huggingface.co/settings/tokens '
-                'to avoid Hugging Face\u2019s anonymous download throttle.',
-                style: textTheme.bodySmall,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: controller,
-                obscureText: obscure,
-                autocorrect: false,
-                enableSuggestions: false,
-                decoration: InputDecoration(
-                  hintText: 'hf_...',
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(NomadRadii.card)),
-                  suffixIcon: IconButton(
-                    icon: Icon(obscure
-                        ? Icons.visibility_rounded
-                        : Icons.visibility_off_rounded),
-                    onPressed: () => setDialogState(() => obscure = !obscure),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                HapticFeedback.lightImpact();
-                Navigator.pop(context);
-              },
-              child: Text(loc.cancel,
-                  style:
-                      textTheme.bodyMedium?.copyWith(color: nomad.textSecondary)),
-            ),
-            TextButton(
-              onPressed: () {
-                HapticFeedback.lightImpact();
-                prefs.remove('hf_api_token');
-                Navigator.pop(context);
-              },
-              child: Text('Clear',
-                  style: textTheme.bodyMedium?.copyWith(color: Colors.red)),
-            ),
-            TextButton(
-              onPressed: () {
-                HapticFeedback.lightImpact();
-                prefs.setString('hf_api_token', controller.text.trim());
-                Navigator.pop(context);
-              },
-              child: Text(loc.save,
-                  style: textTheme.bodyMedium
-                      ?.copyWith(color: nomad.textPrimary)),
-            ),
-          ],
-        ),
-      ),
-    );
-    controller.dispose();
-  }
 
   void _confirmClearCache(BuildContext context, TextTheme textTheme) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;

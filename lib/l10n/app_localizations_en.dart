@@ -39,15 +39,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get version => 'Version';
 
   @override
-  String get yourPrivateAI =>
-      'Your private AI assistant that runs locally on your device. Your data stays on your phone — no account needed.';
+  String get yourPrivateAI => 'Your private AI assistant that runs locally on your device. Your data stays on your phone — no account needed.';
 
   @override
   String get selectModel => 'Select Model';
 
   @override
-  String get noModelsDownloaded =>
-      'No models downloaded. Go to Library to download.';
+  String get noModelsDownloaded => 'No models downloaded. Go to Library to download.';
 
   @override
   String get poweredBy => 'Powered by';
@@ -65,8 +63,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get clearCacheQuestion => 'Clear cache?';
 
   @override
-  String get clearCacheMessage =>
-      'This removes temporary files only. Your downloaded models and chats will not be affected.';
+  String get clearCacheMessage => 'This removes temporary files only. Your downloaded models and chats will not be affected.';
 
   @override
   String get deleteModelQuestion => 'Delete Model?';
@@ -123,15 +120,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get downloadAndContinue => 'Download & Continue';
 
   @override
-  String get highSpeedConnectionRecommended =>
-      'High-speed connection recommended.';
+  String get highSpeedConnectionRecommended => 'High-speed connection recommended.';
 
   @override
   String get noModelSelected => 'No model selected';
 
   @override
-  String get noModelSelectedMessage =>
-      'No model is currently selected or downloaded. Please visit the Library to download a model first.';
+  String get noModelSelectedMessage => 'No model is currently selected or downloaded. Please visit the Library to download a model first.';
 
   @override
   String get messageNomad => 'Message Nomad...';
@@ -179,22 +174,19 @@ class AppLocalizationsEn extends AppLocalizations {
   String get weValuePrivacy => 'We value your privacy';
 
   @override
-  String get privacyDescription =>
-      'We designed Nomad to use Local AI models, so your data doesn\'t go to corporations, not even us.';
+  String get privacyDescription => 'We designed Nomad to use Local AI models, so your data doesn\'t go to corporations, not even us.';
 
   @override
   String get fullyOffline => 'Fully offline';
 
   @override
-  String get offlineDescription =>
-      'Since we use Local AI models, Nomad works entirely offline, so you can ask questions even with no coverage.';
+  String get offlineDescription => 'Since we use Local AI models, Nomad works entirely offline, so you can ask questions even with no coverage.';
 
   @override
   String get chooseModel => 'Choose a model to download';
 
   @override
-  String get chooseModelDescription =>
-      'Nomad recommends models optimized for your device, ensuring they work properly.';
+  String get chooseModelDescription => 'Nomad recommends models optimized for your device, ensuring they work properly.';
 
   @override
   String get thatsIt => 'That\'s it. Nomad is ready!';
@@ -221,8 +213,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get nomadCreativeRequired => 'Nomad Creative Required';
 
   @override
-  String get installCreativeModel =>
-      'Install the Creative model to start creating.';
+  String get installCreativeModel => 'Install the Creative model to start creating.';
 
   @override
   String get installNomadCreative => 'Install Nomad Creative';
@@ -249,12 +240,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get nomadCreativeNotInstalled => 'Nomad Creative is not installed.';
 
   @override
-  String get installCreativeToUseCreations =>
-      'Please install it from Models to use Creations.';
+  String get installCreativeToUseCreations => 'Please install it from Models to use Creations.';
 
   @override
-  String get modelArchitectureUnsupported =>
-      'Model architecture unsupported. Please try a standard Gemma model for now.';
+  String get modelArchitectureUnsupported => 'Model architecture unsupported. Please try a standard Gemma model for now.';
 
   @override
   String get inferenceError => 'Inference Error';
@@ -297,8 +286,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get selectOptimizedModel =>
-      'Select the most optimized model for your device.';
+  String get selectOptimizedModel => 'Select the most optimized model for your device.';
 
   @override
   String get creationNotFound => 'Creation not found';
@@ -326,4 +314,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String daysAgo(Object days) {
     return '${days}d ago';
   }
+
+  @override
+  String get modelDoesNotSupportImageInput => 'This model does not support image input.';
 }

@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:background_downloader/background_downloader.dart';
 
 class DownloadNotificationService {
-  static const _liveActivityChannel = MethodChannel('com.finn.nomad/live_activity');
+  static const _liveActivityChannel = MethodChannel('com.varun.nomad/live_activity');
 
   static bool _initialized = false;
   static String? _activeModelId;

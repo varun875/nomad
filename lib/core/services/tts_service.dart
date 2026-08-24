@@ -214,7 +214,7 @@ class TtsService {
     try {
       // Brief pause so any lingering STT start beep finishes first.
       await Future.delayed(const Duration(milliseconds: 250));
-      const channel = MethodChannel('com.finn.nomad/storage');
+      const channel = MethodChannel('com.varun.nomad/storage');
       await channel.invokeMethod('unmuteMusicStream');
     } catch (_) {}
     _musicMuted = false;
@@ -227,7 +227,7 @@ class TtsService {
     if (_queue.isNotEmpty) return;
     if (Platform.isAndroid) {
       try {
-        const channel = MethodChannel('com.finn.nomad/storage');
+        const channel = MethodChannel('com.varun.nomad/storage');
         await channel.invokeMethod('muteMusicStream');
       } catch (_) {}
     }

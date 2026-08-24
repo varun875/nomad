@@ -7,7 +7,7 @@ import 'package:flutter/services.dart';
 /// [ModelService] and [InferenceService]: the MethodChannel call on mobile and
 /// the `sysctl`/`free`/`powershell` probes on desktop.
 class DeviceInfo {
-  static const _channel = MethodChannel('com.finn.nomad/storage');
+  static const _channel = MethodChannel('com.varun.nomad/storage');
 
   /// Synchronous, best-effort total physical RAM in MB, or null if it could
   /// not be detected. Used where a synchronous value is required (e.g. GPU

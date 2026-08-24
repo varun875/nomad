@@ -1,4 +1,4 @@
-package com.finn.nomad
+package com.varun.nomad
 
 import android.os.Bundle
 import android.service.voice.VoiceInteractionSession

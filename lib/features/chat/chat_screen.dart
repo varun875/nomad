@@ -17,6 +17,7 @@ import '../../core/services/tts_service.dart';
 import '../creations/creations_screen.dart';
 import '../../core/services/inference_service.dart';
 import '../../core/services/memory_service.dart';
+import '../../core/services/model_service.dart';
 import '../../core/services/performance_service.dart';
 import '../../core/services/search_service.dart';
 import '../../core/providers/model_provider.dart';
@@ -384,6 +385,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
     HapticFeedback.lightImpact();
     final attachedImages = List<String>.from(_attachedImages);
+    if (hasImages) {
+      // Inform the user up front instead of letting the engine throw a raw
+      // "Cannot read image.png" error when the model has no vision encoder.
+      final modelForVision = ref.read(selectedModelProvider);
+      final visionCapable = modelForVision != null &&
+          modelForVision.localPath != null &&
+          ModelService.getMmprojUrl(modelForVision.id) != null &&
+          await File(modelForVision.localPath!
+                  .replaceAll('.gguf', '.mmproj'))
+              .exists();
+      if (!visionCapable) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content:
+                  Text(AppLocalizations.of(context)!
+                      .modelDoesNotSupportImageInput),
+            ),
+          );
+        }
+        return;
+      }
+    }
     ref.read(chatMessagesProvider.notifier).addMessage(
           ChatMessage(
             text: text,
@@ -399,6 +423,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
     final selectedModel = ref.read(selectedModelProvider);
     if (selectedModel == null || selectedModel.localPath == null) {
+      if (!mounted) return;
       ref.read(chatMessagesProvider.notifier).updateLastMessage(
             ChatMessage(
               text: AppLocalizations.of(context)!.noModelSelectedMessage,
@@ -723,7 +748,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   Future<void> _checkAssistantTrigger() async {
     try {
-      const channel = MethodChannel('com.finn.nomad/storage');
+      const channel = MethodChannel('com.varun.nomad/storage');
       final bool wasAssistant =
           await channel.invokeMethod('checkAssistantTrigger');
       if (wasAssistant && mounted) {
@@ -855,7 +880,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (Platform.isAndroid) {
       try {
         _tts.enableAutoMute = true;
-        const channel = MethodChannel('com.finn.nomad/storage');
+        const channel = MethodChannel('com.varun.nomad/storage');
         await channel.invokeMethod('muteSystemSounds');
         await channel.invokeMethod('muteMusicStream');
       } catch (_) {}
@@ -896,7 +921,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (Platform.isAndroid) {
       try {
         _tts.enableAutoMute = false;
-        const channel = MethodChannel('com.finn.nomad/storage');
+        const channel = MethodChannel('com.varun.nomad/storage');
         await channel.invokeMethod('unmuteSystemSounds');
         await channel.invokeMethod('unmuteMusicStream');
       } catch (_) {}
@@ -941,7 +966,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     // Ensure sounds are restored
     if (Platform.isAndroid) {
       _tts.enableAutoMute = false;
-      const channel = MethodChannel('com.finn.nomad/storage');
+      const channel = MethodChannel('com.varun.nomad/storage');
       channel.invokeMethod('unmuteSystemSounds').catchError((_) => null);
       channel.invokeMethod('unmuteMusicStream').catchError((_) => null);
     }

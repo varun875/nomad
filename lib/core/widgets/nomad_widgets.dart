@@ -97,6 +97,17 @@ class _NomadBackdropState extends State<NomadBackdrop>
   void didUpdateWidget(NomadBackdrop oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.state != oldWidget.state) {
+      // On constrained phones, avoid a full-screen composited animation while
+      // the model is loading or streaming. The state still updates instantly,
+      // but inference and scrolling keep the frame budget.
+      if (PerformanceService.instance.isConstrained) {
+        _loadCtrl.value = widget.state == BackdropState.loading
+            ? 1.0
+            : widget.state == BackdropState.streaming
+                ? 0.45
+                : 0.0;
+        return;
+      }
       if (widget.state == BackdropState.loading) {
         _loadCtrl.animateTo(1.0, duration: const Duration(milliseconds: 1100));
       } else if (widget.state == BackdropState.streaming) {

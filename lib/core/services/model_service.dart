@@ -4,7 +4,7 @@ import '../models/hf_model.dart';
 import 'device_info_service.dart';
 
 class ModelService {
-  static const _channel = MethodChannel('com.finn.nomad/storage');
+  static const _channel = MethodChannel('com.varun.nomad/storage');
 
   // Nomad lineup (Unsloth GGUF quantizations)
   static final List<HFModel> _allModels = [
@@ -23,9 +23,9 @@ class ModelService {
       id: 'nomad-steady-gemma4-e2b',
       name: 'Nomad Steady',
       baseModel: 'Gemma 4 E2B QAT',
-      description: 'Compact vision model with image understanding. QAT-tuned 4-bit delivers near-Q8 quality at ~2.6GB using less RAM - great for balanced performance and multimodal tasks on mid-range devices.',
-      sizeMB: 2499,
-      totalBytes: 2620370976,
+      description: 'Mobile-optimized Gemma 4 E2B with image understanding. QAT mobile quantization uses targeted 2-bit layers to reduce storage and memory while retaining strong quality on phones.',
+      sizeMB: 2186,
+      totalBytes: 2186186784,
       requiredRAM: 5,
       speed: 4.2,
       quality: 4.6,
@@ -119,13 +119,9 @@ class ModelService {
   /// Desktop always has enough RAM for these small models; filtering is only
   /// relevant on mobile. [ramGB] can be injected for testing/preview.
   static Future<List<HFModel>> getAvailableModels({int? ramGB}) async {
-    // Desktop always has enough RAM for these small models;
-    // filtering is only relevant on mobile.
-    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
-      return List.from(_allModels);
-    }
-    final ram = ramGB ?? await getDeviceRAM();
-    return filterByRam(_allModels, ram);
+    // Keep every model visible so users can explicitly test the limits of
+    // their device. The pure filterByRam helper remains available for tests.
+    return List.from(_allModels);
   }
 
   /// Alias for getAvailableModels - used by UI components
@@ -141,7 +137,7 @@ class ModelService {
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf';
       case 'nomad-steady-gemma4-e2b':
-        return 'https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/main/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf';
+        return 'https://huggingface.co/unsloth/gemma-4-E2B-it-qat-mobile-GGUF/resolve/main/gemma-4-E2B-it-qat-UD-Q2_K_XL.gguf';
       case 'nomad-smart-gemma4-e4b':
         return 'https://huggingface.co/Finn-Technologies/e1/resolve/main/e1.Q4_K_M.gguf';
       default:
@@ -154,7 +150,7 @@ class ModelService {
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-F16.gguf';
       case 'nomad-steady-gemma4-e2b':
-        return 'https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/main/mmproj-F16.gguf';
+        return 'https://huggingface.co/unsloth/gemma-4-E2B-it-qat-mobile-GGUF/resolve/main/mmproj-F16.gguf';
       case 'nomad-smart-gemma4-e4b':
         return 'https://huggingface.co/Finn-Technologies/e1/resolve/main/mmproj-e1.gguf';
       default:

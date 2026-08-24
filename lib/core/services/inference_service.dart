@@ -3,12 +3,14 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:llamadart/llamadart.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'device_info_service.dart';
 import 'model_service.dart';
 import 'performance_service.dart';
 import '../utils/logger.dart';
 
 class InferenceService {
+  static const generationThreadsPreference = 'inferenceGenerationThreads';
   static final InferenceService _instance = InferenceService._internal();
   factory InferenceService() => _instance;
   InferenceService._internal() {
@@ -108,25 +110,91 @@ class InferenceService {
   /// the platform processor count. Pure and unit-testable so every chip
   /// topology can be verified off-device.
   ///
-  /// When [performanceCores] is known (Android sysfs), threads are capped at
-  /// that value: decode is memory-bandwidth bound on the big cores only, and
-  /// spilling onto efficiency cores slows it down — and on some MediaTek
-  /// chipsets causes a catastrophic ~100x throughput collapse (llama.cpp
-  /// issue #21763). Without detection it falls back to a processor-derived
-  /// estimate that reserves headroom for Flutter's UI/raster threads.
+  /// When [performanceCores] is known (Android sysfs), use the performance
+  /// cores plus a small number of efficiency cores. On hybrid mobile CPUs,
+  /// limiting decode to only the fast cores can leave too much compute unused;
+  /// using every core can starve Flutter and increase thermal throttling. The
+  /// 2+6 Dimensity layout therefore starts at four threads, while larger
+  /// performance clusters can use more. Without detection it falls back to a
+  /// processor-derived estimate that reserves headroom for Flutter's UI/raster
+  /// threads.
   static int resolveOptimalThreads({
     required bool constrained,
     required int processors,
     int? performanceCores,
   }) {
     if (performanceCores != null && performanceCores > 0) {
-      // Never exceed the real processor count, and stay within [2, 8] so a
-      // tiny presence (1 weird core on a behemoth chip) can't starve decode.
-      return performanceCores.clamp(2, processors).clamp(2, 8);
+      // Small performance clusters benefit from two additional efficiency
+      // workers. This gives a 2+6 layout four decode threads, while a phone
+      // with four or more performance cores stays on that cluster and avoids
+      // oversubscribing the CPU.
+      final hybridTarget = performanceCores == 1
+          ? 2
+          : (performanceCores == 2 ? 4 : performanceCores);
+      return hybridTarget.clamp(2, processors).clamp(2, 8);
     }
     if (processors <= 2) return processors;
     final target = constrained ? processors - 2 : processors - 1;
     return target.clamp(2, constrained ? 4 : 8);
+  }
+
+  /// Resolve the thread count for prompt/batch evaluation. Unlike single-token
+  /// decode, batched prompt eval parallelizes well across *all* cores — every
+  /// thread works on an independent slice of the batch, so spreading it over
+  /// big + little cores yields ~4-6x faster TTFT on big.LITTLE chips without
+  /// triggering the MediaTek #21763 throughput collapse (which only hits
+  /// per-token decode). Pure and unit-testable.
+  static int resolveOptimalBatchThreads({required int processors}) {
+    return processors.clamp(2, 16);
+  }
+
+  static int _optimalBatchThreads() {
+    final processors = Platform.numberOfProcessors;
+    final threads = resolveOptimalBatchThreads(processors: processors);
+    Log.d(
+      'Inference',
+      'Batch threads (prompt eval): $processors cores -> $threads threads',
+    );
+    return threads;
+  }
+
+  static Future<int?> _generationThreadOverride() async {
+    final prefs = await SharedPreferences.getInstance();
+    final value = prefs.getInt(generationThreadsPreference);
+    if (value == null || !const [2, 4, 6, 8].contains(value)) return null;
+    return value;
+  }
+
+  /// Detects 32-bit ARMv7 native code from the process's loaded-library map.
+  /// 64-bit ART loads libraries out of `/lib/arm64/` inside the APK, while
+  /// 32-bit devices use `/lib/arm/`. ARMv7 has a far smaller L2 cache than
+  /// modern arm64 chips, so callers shrink the native batch to fit it. When
+  /// the markers are absent (unknown platform), defaults to 64-bit behavior.
+  /// Pure and unit-testable.
+  static bool classifiesAsArmv7(List<String> mapsLines) {
+    for (final line in mapsLines) {
+      if (line.contains('/lib/arm64/')) return false;
+      if (line.contains('/lib/arm/')) return true;
+    }
+    return false;
+  }
+
+  static bool? _cachedArmv7;
+
+  static bool _detectArmv7() {
+    if (!Platform.isAndroid) return false;
+    final cached = _cachedArmv7;
+    if (cached != null) return cached;
+    try {
+      final detected = classifiesAsArmv7(
+        File('/proc/self/maps').readAsLinesSync(),
+      );
+      _cachedArmv7 = detected;
+      return detected;
+    } catch (_) {
+      _cachedArmv7 = false;
+      return false;
+    }
   }
 
   static int _optimalGenerationThreads(bool constrained) {
@@ -157,8 +225,13 @@ class InferenceService {
   Future<String> loadModel(String localPath) async {
     final result = _activeLoad.then((_) => _loadModelInternal(localPath));
     // Chain the current load so concurrent callers wait for it instead of
-    // double-loading; the error is still delivered to this call's awaiters.
-    _activeLoad = result.catchError((Object _) => localPath);
+    // double-loading. On failure reset the queue so the next load can
+    // proceed, but propagate the error to this caller (don't mask as success).
+    _activeLoad = result.then((v) => v, onError: (Object e, StackTrace s) {
+      _activeLoad = Future<String>.value('');
+      // Re-throw to keep error for chained catchError, but _activeLoad is reset.
+      throw e;
+    });
     return result;
   }
 
@@ -188,9 +261,9 @@ class InferenceService {
       if (ram <= 4) {
         ctx = 2048; // Safe fallback to prevent OOM crashes on low-end devices
       } else if (ram <= 8) {
-        // OnePlus Nord 1 / typical mid-range device (6GB - 8GB RAM):
-        // Lite model can run with 4096 context, Steady/Smart models with 3072 context
-        ctx = fileSizeMB < 1000 ? 4096 : 3072;
+        // 2500 keeps history (~1375 tokens) while saving ~150MB KV vs 3072
+        // on 6GB mid-range phones (e.g. Steady 2.2GB on Dimensity 6300).
+        ctx = fileSizeMB < 1000 ? 4096 : 2500;
       } else {
         // High-end mobile devices (12GB+ RAM): 4096 context for all models
         ctx = 4096;
@@ -211,23 +284,51 @@ class InferenceService {
         (PerformanceService.instance.isConstrained ||
             PerformanceService.instance.deviceRamGb <= 8);
     final lowEnd = isMobile && PerformanceService.instance.isLowEnd;
-    final generationThreads = _optimalGenerationThreads(constrained);
+    final threadOverride = await _generationThreadOverride();
+    final generationThreads =
+        threadOverride ?? _optimalGenerationThreads(constrained);
+    final batchThreads = _optimalBatchThreads();
+    // 32-bit ARMv7 devices typically carry a ~256KB-1MB L2 per core; keep the
+    // native batch small enough to stay resident instead of thrashing it.
+    final armv7 = Platform.isAndroid && _detectArmv7();
+    // Large models on constrained (6-8GB) phones use the smaller 128/64
+    // profile you requested - saves ~200MB peak during prefill vs 256/128.
+    final isLargeConstrained = constrained && fileSizeMB >= 1000;
+    final batchSize = armv7
+        ? 64
+        : (lowEnd || isLargeConstrained ? 128 : (constrained ? 256 : 1024));
+    final microBatchSize = armv7
+        ? 32
+        : (lowEnd || isLargeConstrained ? 64 : (constrained ? 128 : 512));
     await _engine!.loadModel(
       localPath,
       modelParams: ModelParams(
         contextSize: ctx,
         gpuLayers: gpuLayers,
-        // Smaller native batches substantially reduce peak allocation and
-        // scheduler stalls on mid/low-tier phones. Desktop keeps the larger
-        // batches for throughput.
+        // Prompt eval decodes a whole batch at once and parallelizes cleanly
+        // across every core (big + little) for fast time-to-first-token, while
+        // generation stays pinned to the big cores only: decode is bandwidth
+        // bound and spilling to little cores both slows it and — on MediaTek —
+        // can collapse throughput ~100x (llama.cpp #21763) and heat the chip.
         numberOfThreads: generationThreads,
-        numberOfThreadsBatch: generationThreads,
-        batchSize: lowEnd ? 128 : (constrained ? 256 : 1024),
-        microBatchSize: lowEnd ? 64 : (constrained ? 128 : 512),
+        numberOfThreadsBatch: batchThreads,
+        batchSize: batchSize,
+        microBatchSize: microBatchSize,
         flashAttention: isMobile ? FlashAttention.enabled : FlashAttention.auto,
         cacheTypeK: isMobile ? KvCacheType.q8_0 : KvCacheType.f16,
         cacheTypeV: isMobile ? KvCacheType.q8_0 : KvCacheType.f16,
       ),
+    );
+
+    Log.d(
+      'Inference',
+      'Model loaded: ${localPath.split('/').last} (${fileSizeMB}MB) '
+      'backend=${Platform.isAndroid ? 'cpu' : 'auto'} '
+      'ctx=$ctx threads=$generationThreads'
+      '${threadOverride == null ? '' : ' (override)'} '
+      'batchThreads=$batchThreads '
+      'batch=$batchSize ubatch=$microBatchSize gpuLayers=$gpuLayers '
+      'fa=${isMobile ? 'on' : 'auto'} kv=q8_0 armv7=$armv7',
     );
 
     // On low-RAM phones the F16 vision encoder (~0.5-1GB) competes with the
@@ -323,10 +424,12 @@ class InferenceService {
     for (final turn in history.reversed) {
       final role = turn['role'] ?? 'user';
       final content = turn['content'] ?? '';
-      if (retained.isNotEmpty && historyChars + content.length > maxChars) {
+      // Include role tag overhead (~8 chars) so token estimate isn't under-counted for tools/roles.
+      final turnChars = content.length + role.length + 8;
+      if (retained.isNotEmpty && historyChars + turnChars > maxChars) {
         break;
       }
-      historyChars += content.length;
+      historyChars += turnChars;
       retained.add({'role': role, 'content': content});
     }
     return retained.reversed.toList();
@@ -359,12 +462,19 @@ class InferenceService {
 
       // Load the vision encoder lazily on low-RAM phones: the mmproj was
       // deferred at model load time and is only needed for image messages.
-      if (imagePaths != null &&
-          imagePaths.isNotEmpty &&
-          _availableMmProjPath != null &&
-          _loadedMmProjPath == null) {
-        await _engine!.loadMultimodalProjector(_availableMmProjPath!);
-        _loadedMmProjPath = _availableMmProjPath;
+      if (imagePaths != null && imagePaths.isNotEmpty) {
+        final mmProjPath = localPath.replaceAll('.gguf', '.mmproj');
+        final visionAvailable = _availableMmProjPath != null ||
+            _loadedMmProjPath != null ||
+            await File(mmProjPath).exists();
+        if (!visionAvailable) {
+          yield "Error: The current model does not support image input. Switch to a vision-capable model or remove the attached image.";
+          return;
+        }
+        if (_availableMmProjPath != null && _loadedMmProjPath == null) {
+          await _engine!.loadMultimodalProjector(_availableMmProjPath!);
+          _loadedMmProjPath = _availableMmProjPath;
+        }
       }
 
       final messages = <LlamaChatMessage>[];
@@ -382,7 +492,7 @@ class InferenceService {
       for (final turn in retainedHistory) {
         final role = turn['role'] ?? 'user';
         final content = turn['content'] ?? '';
-        historyChars += content.length;
+        historyChars += content.length + role.length + 8;
         messages.add(LlamaChatMessage.fromText(
           role: role == 'assistant'
               ? LlamaChatRole.assistant
@@ -407,11 +517,22 @@ class InferenceService {
         ));
       }
 
+      // Include tool definition chars so estimate doesn't under-count agentic prompts.
+      final toolChars = tools?.fold<int>(
+              0, (s, t) => s + t.name.length + t.description.length + 16) ??
+          0;
       final totalPromptChars =
-          effectiveSystem.length + historyChars + prompt.length;
+          effectiveSystem.length + historyChars + prompt.length + toolChars;
       final estimatedPromptTokens = (totalPromptChars / 3.5).round();
-      final availableOutputTokens =
-          (contextSize - estimatedPromptTokens - 128).clamp(64, maxTokens);
+      // Don't starve output to 64 when prompt already fills context - that
+      // produces 64-token truncated junk that looksTruncated re-triggers.
+      // Clamp but log so the caller can see context pressure in logcat.
+      final rawAvailable = contextSize - estimatedPromptTokens - 128;
+      if (rawAvailable < 64) {
+        Log.d('Inference',
+            'Context pressure: ctx=$contextSize prompt~$estimatedPromptTokens -> available clamped to 64 (history may be truncated)');
+      }
+      final availableOutputTokens = rawAvailable.clamp(64, maxTokens);
 
       const stopSequences = [
         "<|im_end|>",
@@ -436,7 +557,14 @@ class InferenceService {
       );
 
       final stopwatch = Stopwatch()..start();
-      int tokenCount = 0;
+      final outputStopwatch = Stopwatch();
+      // Count the complete streamed character payload and estimate tokens
+      // once at the end. Rounding every small chunk independently can turn a
+      // perfectly valid short chunk into zero tokens and hide the final speed
+      // indicator.
+      int outputChars = 0;
+      _lastOutputTokPerSec = 0;
+      _lastOutputTokens = 0;
       bool firstTokenEmitted = false;
 
       const maxToolRounds = 5;
@@ -461,11 +589,18 @@ class InferenceService {
                 if (ttftMs > 0) {
                   _lastPromptTokPerSec =
                       estimatedPromptTokens / (ttftMs / 1000.0);
+                  Log.d(
+                    'Inference',
+                    'TTFT ${ttftMs}ms '
+                    '($estimatedPromptTokens prompt tokens -> '
+                    '${_lastPromptTokPerSec.toStringAsFixed(1)} t/s)',
+                  );
                 }
                 _lastPromptTokens = estimatedPromptTokens;
                 firstTokenEmitted = true;
+                outputStopwatch.start();
               }
-              tokenCount += (text.length / 3.5).round();
+              outputChars += text.length;
               yield text;
               hasEmittedContent = true;
             }
@@ -559,10 +694,21 @@ class InferenceService {
         consecutiveFailures = anySuccess ? 0 : consecutiveFailures + 1;
       }
 
-      final elapsedMs = stopwatch.elapsedMilliseconds;
+      // Output speed should measure decode time only. The full stopwatch also
+      // includes prompt evaluation/TTFT, which makes fast decoders look slow
+      // whenever the conversation history is long.
+      final elapsedMs = outputStopwatch.elapsedMilliseconds;
+      final tokenCount = outputChars == 0
+          ? 0
+          : (outputChars / 3.5).round().clamp(1, 1 << 31);
       if (elapsedMs > 0 && tokenCount > 0) {
         _lastOutputTokPerSec = tokenCount / (elapsedMs / 1000.0);
         _lastOutputTokens = tokenCount;
+        Log.d(
+          'Inference',
+          'Generation $tokenCount tokens in ${elapsedMs}ms '
+          '(${_lastOutputTokPerSec.toStringAsFixed(1)} t/s)',
+        );
       }
     } catch (e) {
       yield "Error: ${e.toString()}";

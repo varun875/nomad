@@ -174,15 +174,13 @@ class AppLocalizationsZh extends AppLocalizations {
   String get weValuePrivacy => '我们重视您的隐私';
 
   @override
-  String get privacyDescription =>
-      '我们将 Nomad 设计为使用本地 AI 模型，因此您的数据不会流向企业，甚至不会流向我们自己。';
+  String get privacyDescription => '我们将 Nomad 设计为使用本地 AI 模型，因此您的数据不会流向企业，甚至不会流向我们自己。';
 
   @override
   String get fullyOffline => '完全离线';
 
   @override
-  String get offlineDescription =>
-      '由于我们使用本地 AI 模型，Nomad 完全离线工作，因此即使没有网络覆盖，您也可以提问。';
+  String get offlineDescription => '由于我们使用本地 AI 模型，Nomad 完全离线工作，因此即使没有网络覆盖，您也可以提问。';
 
   @override
   String get chooseModel => '选择要下载的模型';
@@ -316,4 +314,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String daysAgo(Object days) {
     return '$days天前';
   }
+
+  @override
+  String get modelDoesNotSupportImageInput => '该模型不支持图片输入。';
 }

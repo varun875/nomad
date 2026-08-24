@@ -16,7 +16,7 @@ But it can also search the web when you want it to, combining the privacy of loc
 | Nomad Steady | 2.5 GB | 5 GB+ | Multimodal reasoning, vision, balanced speed |
 | Nomad Smart | 5.3 GB | 7 GB+ | Flagship: vision, complex analysis, deep reasoning |
 
-All models are GGUF quantizations of Qwen 3.5 0.8B (Lite) and Gemma 4 E2B/E4B (Steady/Smart), downloaded and auto-updated directly from Hugging Face inside the app (an optional Hugging Face token supports faster/private downloads).
+All models are GGUF quantizations of Qwen 3.5 0.8B (Lite) and Gemma 4 E2B/E4B (Steady/Smart), downloaded directly from Hugging Face inside the app via the public CDN (no token needed).
 
 ### Vision
 
@@ -53,6 +53,7 @@ Text streams in live as it's generated. Responses that get cut off automatically
 On-device speech-to-text and text-to-speech with a live waveform composer. Say what's on your mind; Nomad listens, thinks, and talks back.
 
 ### Localized UI
+
 The entire interface is translated into 6 languages:
 
 | Language | Locale |
@@ -86,7 +87,6 @@ cd nomad
 # Dependencies
 flutter pub get
 
-# Optional: copy .env.example to .env and add a Hugging Face token / search keys
 # Run on a connected device
 flutter run
 
@@ -119,7 +119,7 @@ lib/
 │   ├── creations/               # App builder gallery, editor, preview
 │   ├── skills/                  # Tools & agent registry
 │   ├── you/                     # Personalization
-│   └── settings/                # Cache, token/keys, about, version
+│   └── settings/                # Cache, search keys, about, version
 ├── l10n/                        # ARB + generated Dart (6 languages)
 └── assets/
     ├── images/                  # SVG icons
@@ -168,7 +168,6 @@ Nomad is built with privacy as a hard requirement:
 
 - **Gemma 4 models** — Steady (Gemma 4 E2B QAT) and Smart (e1, a Gemma 4 E4B fine-tune) replace the previous Qwen general models with native vision and mmproj auto-download
 - **Vision for all models** — Lite (Qwen 3.5 0.8B), Steady, and Smart all support image attachments
-- **Hugging Face token downloads** — set a token in `settings/.env` for faster, private model downloads
 - **Agentic web search** — the model decides when to search via tool calling; Brave/SearXNG/DuckDuckGo providers
 - **MediaTek performance fix** — generation threads are now sized to big cores, eliminating a ~100× decode collapse on A76/A55 chipsets
 - **Low-RAM hardening** — serialized model loads, lazy vision encoder on 4–6 GB phones, quantized KV cache

@@ -42,10 +42,15 @@ class MemoryService {
   }
 
   List<Memory> getAllMemories() {
-    final box = Hive.box(_boxName);
-    return box.values
-        .map((v) => Memory.fromJson(Map<String, dynamic>.from(v)))
-        .toList();
+    if (!Hive.isBoxOpen(_boxName)) return [];
+    try {
+      final box = Hive.box(_boxName);
+      return box.values
+          .map((v) => Memory.fromJson(Map<String, dynamic>.from(v)))
+          .toList();
+    } catch (_) {
+      return [];
+    }
   }
 
   Future<void> saveMemory(String content, {String category = 'general'}) async {

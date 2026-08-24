@@ -236,5 +236,9 @@
   "justNow": "Just now",
   "minutesAgo": "{minutes}m ago",
   "hoursAgo": "{hours}h ago",
-  "daysAgo": "{days}d ago"
+  "daysAgo": "{days}d ago",
+  "modelDoesNotSupportImageInput": "This model does not support image input.",
+  "@modelDoesNotSupportImageInput": {
+    "description": "Shown when the selected model cannot process image attachments"
+  }
 }

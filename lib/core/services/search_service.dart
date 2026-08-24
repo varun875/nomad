@@ -4,9 +4,8 @@ import 'search_provider.dart';
 
 /// Facade for web search backed by a pluggable [WebSearchProvider].
 ///
-/// Defaults to the zero-config DuckDuckGo scraper. A self-hosted SearXNG
-/// instance or the Brave Search API can be used instead (via
-/// SearchService.configure or the webSearchProvider Riverpod provider).
+/// Defaults to the zero-config DuckDuckGo scraper (free, no key).
+/// A self-hosted SearXNG instance can be used instead.
 class SearchService {
   static final SearchService _instance = SearchService._internal();
   factory SearchService() => _instance;

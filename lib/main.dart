@@ -7,7 +7,6 @@ import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:home_widget/home_widget.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'l10n/app_localizations.dart';
 import 'features/onboarding/onboarding_page.dart';
 import 'features/chat/chat_screen.dart';
@@ -22,7 +21,6 @@ import 'features/settings/license_screen.dart';
 import 'core/widgets/nomad_shell.dart';
 import 'core/services/inference_service.dart';
 import 'core/services/search_service.dart';
-import 'core/services/brave_search_provider.dart';
 import 'core/services/searxng_search_provider.dart';
 import 'core/services/memory_service.dart';
 import 'core/services/performance_service.dart';
@@ -58,8 +56,8 @@ void main() async {
     Hive.openBox('chats'),
     Hive.openBox('creations'),
     Hive.openBox('nomad_code_projects'),
+    Hive.openBox('memories'),
   ]);
-  await dotenv.load(fileName: '.env');
   final startup = await Future.wait<dynamic>([
     SharedPreferences.getInstance(),
     PerformanceService.instance.init(),
@@ -67,17 +65,11 @@ void main() async {
   final prefs = startup.first as SharedPreferences;
   final onboarded = prefs.getBool('onboarded') ?? false;
 
-  // Web search: Brave takes precedence when an API key is stored; otherwise a
-  // custom SearXNG instance if set; otherwise the zero-config DuckDuckGo
-  // scraper stays active.
-  final braveKey = prefs.getString('brave_api_key');
-  if (braveKey != null && braveKey.trim().isNotEmpty) {
-    SearchService().configure(BraveSearchProvider(apiKey: braveKey.trim()));
-  } else {
-    final searxngUrl = prefs.getString('searxng_url');
-    if (searxngUrl != null && searxngUrl.trim().isNotEmpty) {
-      SearchService().configure(SearxngProvider(baseUrl: searxngUrl.trim()));
-    }
+  // Web search: DuckDuckGo free scraper by default, or self-hosted
+  // SearXNG if `searxng_url` is set.
+  final searxngUrl = prefs.getString('searxng_url');
+  if (searxngUrl != null && searxngUrl.trim().isNotEmpty) {
+    SearchService().configure(SearxngProvider(baseUrl: searxngUrl.trim()));
   }
 
   // Pre-warm the model on app start so the first message is near-instant

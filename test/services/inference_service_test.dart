@@ -25,8 +25,9 @@ void main() {
 
     test('drops the oldest turns when the budget is exceeded', () {
       final history = turns(5);
-      // Each turn is ~18 chars. A budget of 40 fits ~2 newest turns.
-      final result = InferenceService.trimHistoryForContext(history, 40);
+      // Each turn is ~18 chars content + role overhead (~12) = ~30 chars.
+      // A budget of 70 fits ~2 newest turns.
+      final result = InferenceService.trimHistoryForContext(history, 70);
       expect(result, hasLength(2));
       expect(result[0]['content'], 'turn-3-xxxxxxxxxx');
       expect(result[1]['content'], 'turn-4-xxxxxxxxxx');
@@ -49,10 +50,12 @@ void main() {
     });
 
     test('retains empty-content turns without consuming budget', () {
+      // Empty content still costs role overhead (~17 chars for assistant), so
+      // a budget of 1 only keeps the newest turn. Budget 35 fits both.
       final result = InferenceService.trimHistoryForContext([
         {'role': 'assistant', 'content': ''},
         {'role': 'user', 'content': 'a'},
-      ], 1);
+      ], 35);
       expect(result, hasLength(2));
       expect(result[0]['content'], '');
       expect(result[1]['content'], 'a');
@@ -183,15 +186,16 @@ void main() {
   });
 
   group('InferenceService.resolveOptimalThreads', () {
-    test('caps threads at the performance-core count (Dimensity 6300)', () {
-      // 8 total cores but only 2 big ones: threads must not exceed 2.
+    test('uses a hybrid thread count on Dimensity 6300', () {
+      // 8 total cores with 2 big and 6 efficiency cores: use four workers
+      // so decode is not limited to the fast cluster alone.
       expect(
         InferenceService.resolveOptimalThreads(
           constrained: true,
           processors: 8,
           performanceCores: 2,
         ),
-        2,
+        4,
       );
     });
 
@@ -291,6 +295,63 @@ void main() {
         ),
         8,
       );
+    });
+  });
+
+  group('InferenceService.resolveOptimalBatchThreads', () {
+    test('Dimensity 6300 uses all 8 cores for prompt eval', () {
+      // 2x A76 + 6x A55: batched prompt eval parallelizes across all cores
+      // for fast TTFT without the MediaTek decode collapse.
+      expect(
+        InferenceService.resolveOptimalBatchThreads(processors: 8),
+        8,
+      );
+    });
+
+    test('quad-core budget chip gets all 4 cores', () {
+      expect(InferenceService.resolveOptimalBatchThreads(processors: 4), 4);
+    });
+
+    test('tiny two-core devices use both cores', () {
+      expect(InferenceService.resolveOptimalBatchThreads(processors: 2), 2);
+    });
+
+    test('a single visible core is floored at 2 threads', () {
+      expect(InferenceService.resolveOptimalBatchThreads(processors: 1), 2);
+    });
+
+    test('huge server chips are capped at 16 batch threads', () {
+      expect(InferenceService.resolveOptimalBatchThreads(processors: 128), 16);
+    });
+  });
+
+  group('InferenceService.classifiesAsArmv7', () {
+    test('returns false for empty maps', () {
+      expect(InferenceService.classifiesAsArmv7([]), isFalse);
+    });
+
+    test('returns false when libraries load from a lib/arm64 directory', () {
+      final maps = [
+        '/data/app/~~abc/com.varun.nomad-xyz/lib/arm64/libllama.so (rw-p)',
+        '/system/lib64/libc.so (r-xp)',
+      ];
+      expect(InferenceService.classifiesAsArmv7(maps), isFalse);
+    });
+
+    test('returns true when libraries load from a lib/arm directory', () {
+      final maps = [
+        '/data/app/~~abc/com.varun.nomad-xyz/lib/arm/libllama.so (rw-p)',
+        '/system/lib/libc.so (r-xp)',
+      ];
+      expect(InferenceService.classifiesAsArmv7(maps), isTrue);
+    });
+
+    test('arm64 marker wins even if a stray lib/arm path appears', () {
+      final maps = [
+        '/data/app/~~abc/com.varun.nomad-xyz/lib/arm64/libllama.so (rw-p)',
+        '/system/lib/arm/test.so (r-xp)',
+      ];
+      expect(InferenceService.classifiesAsArmv7(maps), isFalse);
     });
   });
 }

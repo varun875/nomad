@@ -101,5 +101,9 @@
   "justNow": "刚刚",
   "minutesAgo": "{minutes}分钟前",
   "hoursAgo": "{hours}小时前",
-  "daysAgo": "{days}天前"
+  "daysAgo": "{days}天前",
+  "modelDoesNotSupportImageInput": "该模型不支持图片输入。",
+  "@modelDoesNotSupportImageInput": {
+    "description": "Shown when the selected model cannot process image attachments"
+  }
 }
