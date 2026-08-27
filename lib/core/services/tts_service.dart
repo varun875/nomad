@@ -54,7 +54,8 @@ class TtsService {
       _tts.setErrorHandler((msg) {
         print("TTS: Speech error: $msg");
         _isSpeaking = false;
-        _currentCompleter?.completeError(msg);
+        // Complete normally so await speak() in chat_screen doesn't abort the reply persist.
+        _currentCompleter?.complete();
         _currentCompleter = null;
         _remuteMusicIfNeeded();
         _processQueue();
@@ -190,7 +191,7 @@ class TtsService {
       await _tts.speak(task.text);
     } catch (e) {
       _isSpeaking = false;
-      task.completer.completeError(e);
+      task.completer.complete();
       _processQueue();
     }
   }

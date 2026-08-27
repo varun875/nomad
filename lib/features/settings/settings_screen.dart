@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:go_router/go_router.dart';
@@ -11,17 +12,19 @@ import '../../core/theme/nomad_theme.dart';
 import '../../core/widgets/nomad_widgets.dart';
 import '../../core/widgets/nomad_animations.dart';
 import '../../core/services/inference_service.dart';
+import '../../features/chat/chat_screen.dart';
+import '../../features/creations/creations_screen.dart';
 import '../../l10n/app_localizations.dart';
 
 /// Settings — monochrome, borderless redesign.
-class SettingsScreen extends StatefulWidget {
+class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _showTokenSpeed = false;
   bool _isAssistantEnabled = false;
   int? _threadOverride;
@@ -209,11 +212,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
 }
 
   void _confirmClearCache(BuildContext context, TextTheme textTheme) {
-    final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
-    final loc = AppLocalizations.of(context)!;
+    final screenContext = context;
+    final nomad = Theme.of(screenContext).extension<NomadColorsExtension>()!;
+    final loc = AppLocalizations.of(screenContext)!;
     showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
+      context: screenContext,
+      builder: (dialogContext) => AlertDialog(
         backgroundColor: nomad.surface,
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(NomadRadii.dialog)),
@@ -223,7 +227,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           TextButton(
             onPressed: () {
               HapticFeedback.lightImpact();
-              Navigator.pop(context);
+              Navigator.pop(dialogContext);
             },
             child: Text(loc.cancel,
                 style:
@@ -232,7 +236,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           TextButton(
             onPressed: () async {
               HapticFeedback.lightImpact();
-              Navigator.pop(context);
+              Navigator.pop(dialogContext);
               final prefs = await SharedPreferences.getInstance();
               for (final key in [
                 'onboarded',
@@ -244,8 +248,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
               await Hive.box('chats').clear();
               await Hive.box('creations').clear();
               await Hive.box('settings').clear();
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
+              // Reset in-memory providers so ghost history doesn't persist until restart.
+              ref.invalidate(conversationsProvider);
+              ref.invalidate(creationsProvider);
+              ref.invalidate(chatMessagesProvider);
+              if (screenContext.mounted) {
+                ScaffoldMessenger.of(screenContext).showSnackBar(
                   SnackBar(
                     content: Text(loc.cacheCleared,
                         style: textTheme.bodySmall),

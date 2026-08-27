@@ -26,6 +26,16 @@ class _CreationAppScreenState extends ConsumerState<CreationAppScreen> {
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setNavigationDelegate(
         NavigationDelegate(
+          onNavigationRequest: (NavigationRequest request) {
+            // loadHtmlString uses about:blank; block any prompt-injected
+            // navigation or exfiltration to external hosts.
+            if (request.url == 'about:blank' ||
+                request.url.startsWith('data:') ||
+                request.url.startsWith('blob:')) {
+              return NavigationDecision.navigate;
+            }
+            return NavigationDecision.prevent;
+          },
           onPageFinished: (String url) {
             if (mounted) setState(() => _isLoading = false);
           },

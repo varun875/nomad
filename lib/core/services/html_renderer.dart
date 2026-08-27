@@ -39,6 +39,8 @@ class HtmlRenderer {
       ),
     );
 
+    if (!context.mounted) return null;
+    final overlay = Overlay.of(context);
     final overlayEntry = OverlayEntry(
       builder: (_) => Positioned(
         left: -size.width,
@@ -47,9 +49,17 @@ class HtmlRenderer {
       ),
     );
 
-    Overlay.of(context).insert(overlayEntry);
+    overlay.insert(overlayEntry);
 
-    await Future.delayed(const Duration(milliseconds: 200));
+    // Wait for layout/paint instead of a fixed 200ms - blank previews on slow devices.
+    await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(Duration.zero);
+    if (!context.mounted) {
+      try {
+        overlayEntry.remove();
+      } catch (_) {}
+      return null;
+    }
 
     Uint8List? imageBytes;
     try {
@@ -59,11 +69,11 @@ class HtmlRenderer {
         final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
         imageBytes = byteData?.buffer.asUint8List();
       }
-    } catch (_) {}
-
-    try {
-      overlayEntry.remove();
-    } catch (_) {}
+    } finally {
+      try {
+        overlayEntry.remove();
+      } catch (_) {}
+    }
 
     return imageBytes;
   }

@@ -119,9 +119,18 @@ class CreationsNotifier extends StateNotifier<List<Creation>> {
 
   void _loadFromHive() {
     final box = Hive.box('creations');
-    final items = box.values
-        .map((v) => Creation.fromJson(Map<String, dynamic>.from(v)))
-        .toList();
+    final items = <Creation>[];
+    for (final key in box.keys.toList()) {
+      try {
+        final v = box.get(key);
+        if (v == null) continue;
+        items.add(Creation.fromJson(Map<String, dynamic>.from(v as Map)));
+      } catch (_) {
+        try {
+          box.delete(key);
+        } catch (_) {}
+      }
+    }
     items.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     state = items;
   }
@@ -136,6 +145,23 @@ class CreationsNotifier extends StateNotifier<List<Creation>> {
   }
 
   Future<void> deleteCreation(String id) async {
+    // Remove associated screenshot file so storage doesn't leak.
+    Creation? toDelete;
+    try {
+      toDelete = state.firstWhere((c) => c.id == id);
+    } catch (_) {}
+    if (toDelete?.screenshotPath != null) {
+      try {
+        final f = File(toDelete!.screenshotPath!);
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
+    // Fallback: generic screenshot file that may exist even if path was null
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final fallback = File('${dir.path}/creation_screenshot_$id.png');
+      if (await fallback.exists()) await fallback.delete();
+    } catch (_) {}
     state = state.where((c) => c.id != id).toList();
     final box = Hive.box('creations');
     await box.delete(id);

@@ -71,9 +71,18 @@ class ConversationsNotifier extends StateNotifier<List<ChatSession>> {
 
   void _loadFromHive() {
     final box = Hive.box('chats');
-    final chats = box.values
-        .map((v) => ChatSession.fromJson(Map<String, dynamic>.from(v)))
-        .toList();
+    final chats = <ChatSession>[];
+    for (final key in box.keys.toList()) {
+      try {
+        final v = box.get(key);
+        if (v == null) continue;
+        chats.add(ChatSession.fromJson(Map<String, dynamic>.from(v as Map)));
+      } catch (_) {
+        try {
+          box.delete(key);
+        } catch (_) {}
+      }
+    }
     chats.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     state = chats;
   }
@@ -178,15 +187,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   void _startNewChat() {
+    // Stop any active stream synchronously so its post-stream persist
+    // (which checks _currentConversationId) cannot orphan or mix into the new chat.
+    if (_isStreaming) _stopGeneration();
     _shuffleSuggestions();
+    // Clear the conversation id synchronously - the delayed clear is only for the fade animation.
+    _currentConversationId = null;
+    _contextSummary = null;
     setState(() => _isClearingChat = true);
     Future.delayed(const Duration(milliseconds: 200), () {
       ref.read(chatMessagesProvider.notifier).clear();
-      setState(() {
-        _currentConversationId = null;
-        _contextSummary = null;
-        _isClearingChat = false;
-      });
+      if (mounted) setState(() => _isClearingChat = false);
     });
   }
 
@@ -568,13 +579,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       }
     }
 
-    if (mounted && !_shouldStop) {
+    if (mounted && accumulated.trim().isNotEmpty) {
       setState(() => _isStreaming = false);
       HapticFeedback.selectionClick();
 
+      // Persist even when stopped - user watched the partial reply, don't discard it.
+      final displayText = _shouldStop ? '$accumulated\n\n*(stopped)*' : accumulated;
       ref.read(chatMessagesProvider.notifier).addMessage(
             ChatMessage(
-              text: accumulated,
+              text: displayText,
               fromUser: false,
               time: DateTime.now(),
               outputTokPerSec: InferenceService().lastOutputTokPerSec,
@@ -584,11 +597,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
       if (_currentConversationId != null) {
         final messages = ref.read(chatMessagesProvider);
+        final firstText = messages.first.text;
+        final title = firstText.runes.length > 30
+            ? '${String.fromCharCodes(firstText.runes.take(30))}...'
+            : firstText;
         final conv = ChatSession(
           id: _currentConversationId!,
-          title: messages.first.text.length > 30
-              ? '${messages.first.text.substring(0, 30)}...'
-              : messages.first.text,
+          title: title,
           messages: messages,
           updatedAt: DateTime.now(),
           modelId: selectedModel.id,
@@ -602,8 +617,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         if (html != null && html.isNotEmpty && mounted) {
           final chosenType = _creationType;
           final creationId = DateTime.now().millisecondsSinceEpoch.toString();
-          final title = actualPrompt.length > 30
-              ? '${actualPrompt.substring(0, 30)}...'
+          final title = actualPrompt.runes.length > 30
+              ? '${String.fromCharCodes(actualPrompt.runes.take(30))}...'
               : actualPrompt;
 
           String? screenshotPath;
@@ -886,18 +901,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       } catch (_) {}
     }
 
-    await _stt.listen(
-      onResult: _onSttResult,
-      onSoundLevelChange: (level) => _soundLevel.value = level,
-      listenOptions: SpeechListenOptions(
-        partialResults: true,
-        cancelOnError: true,
-        listenMode: ListenMode.dictation,
-        onDevice: true,
-        listenFor: const Duration(hours: 1), // Practically infinite
-        pauseFor: const Duration(seconds: 30), // Don't stop on short pauses
-      ),
-    );
+    try {
+      await _stt.listen(
+        onResult: _onSttResult,
+        onSoundLevelChange: (level) => _soundLevel.value = level,
+        listenOptions: SpeechListenOptions(
+          partialResults: true,
+          cancelOnError: true,
+          listenMode: ListenMode.dictation,
+          onDevice: true,
+          listenFor: const Duration(hours: 1), // Practically infinite
+          pauseFor: const Duration(seconds: 30), // Don't stop on short pauses
+        ),
+      );
+    } catch (_) {
+      // Mic permission denied or engine not initialized - don't leave UI stuck in live mode.
+      if (mounted) {
+        setState(() => _isLiveMode = false);
+        _modeController.reverse();
+      }
+      await _tts.stop();
+    }
   }
 
   Future<void> _exitLiveMode() async {

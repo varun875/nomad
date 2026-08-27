@@ -31,9 +31,20 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
 
   void _loadInstalledModels() {
     final box = Hive.box('models');
-    final hived = box.values
-        .map((v) => HFModel.fromJson(Map<String, dynamic>.from(v)))
-        .toList();
+    final hived = <HFModel>[];
+    for (final key in box.keys.toList()) {
+      try {
+        final v = box.get(key);
+        if (v == null) continue;
+        hived.add(HFModel.fromJson(Map<String, dynamic>.from(v as Map)));
+      } catch (e) {
+        // Corrupt entry (schema change / interrupted write) would crash startup.
+        // Remove it so the app can launch and the user can re-download.
+        try {
+          box.delete(key);
+        } catch (_) {}
+      }
+    }
     final hivedIds = hived.map((m) => m.id).toSet();
     // Update existing state entries with Hive data, add any new ones
     state = [
@@ -320,6 +331,13 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
   Future<void> deleteModel(String id) async {
     final modelIndex = state.indexWhere((m) => m.id == id);
     if (modelIndex == -1) return;
+
+    // Cancel any live download first - otherwise its later complete event
+    // will re-mark the just-deleted model as installed.
+    try {
+      await FileDownloader().cancelTaskWithId(id);
+      await FileDownloader().cancelTaskWithId('${id}_mmproj');
+    } catch (_) {}
 
     final model = state[modelIndex];
 
