@@ -14,7 +14,8 @@ import 'package:flutter/foundation.dart';
 abstract class Log {
   /// Debug-level log – routine progress, lifecycle events.
   static void d(String tag, String message) {
-    if (kDebugMode) debugPrint('[$tag] $message');
+    // Inference speed logs must be visible in release builds for on-device profiling.
+    if (kDebugMode || tag == 'Inference') debugPrint('[$tag] $message');
   }
 
   /// Warning – something unexpected but recoverable.
