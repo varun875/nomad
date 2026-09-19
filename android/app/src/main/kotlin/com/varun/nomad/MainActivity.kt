@@ -2,9 +2,11 @@ package com.varun.nomad
 
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
 import android.os.StatFs
 import android.os.Environment
 import android.media.AudioManager
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -12,6 +14,21 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.varun.nomad/storage"
     private val oldVolumes = mutableMapOf<Int, Int>()
+
+    // Set from onNewIntent() so a warm-start assistant launch can be consumed by Dart
+    // on app resume (the cold-start path still reads getIntent() directly below).
+    private var pendingAssistant = false
+    private var pendingAssistantPrompt: String? = null
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingAssistant = intent.getBooleanExtra("assistant", false)
+        pendingAssistantPrompt = intent.getStringExtra("assistant_prompt")
+        // Consume-once: don't re-fire on the next config change / resume.
+        intent.removeExtra("assistant")
+        intent.removeExtra("assistant_prompt")
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -38,10 +55,39 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "checkAssistantTrigger" -> {
-                    val wasAssistant = intent.getBooleanExtra("assistant", false)
-                    // Clear the extra so it doesn't trigger again on configuration change
+                    // Cold start reads the launch intent; warm start reads the stash from
+                    // onNewIntent(). Both consume-once so a config change / resume doesn't
+                    // re-trigger the assistant.
+                    val wasAssistant = pendingAssistant || intent.getBooleanExtra("assistant", false)
+                    val prompt = when {
+                        pendingAssistantPrompt != null -> pendingAssistantPrompt
+                        else -> intent.getStringExtra("assistant_prompt")
+                    }
+                    pendingAssistant = false
+                    pendingAssistantPrompt = null
                     intent.removeExtra("assistant")
-                    result.success(wasAssistant)
+                    intent.removeExtra("assistant_prompt")
+                    result.success(mapOf("assistant" to wasAssistant, "prompt" to prompt))
+                }
+                "openAssistantSettings" -> {
+                    // Best-effort jump to the system assistant picker so the user can pick
+                    // Nomad as the default assistant. No local state is implied by this row.
+                    val targets = arrayOf(
+                        Intent("android.settings.VOICE_INPUT_SETTINGS"),
+                        Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS),
+                        Intent(Settings.ACTION_SETTINGS),
+                    )
+                    for (target in targets) {
+                        try {
+                            target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(target)
+                            result.success(true)
+                            return@setMethodCallHandler
+                        } catch (_: Exception) {
+                            // Try the next fallback.
+                        }
+                    }
+                    result.success(false)
                 }
                 "muteSystemSounds" -> {
                     try {

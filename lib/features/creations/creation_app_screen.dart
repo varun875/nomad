@@ -47,11 +47,23 @@ class _CreationAppScreenState extends ConsumerState<CreationAppScreen> {
     _loadCreation();
   }
 
+  static String _wrapWithCsp(String html) {
+    const csp =
+        '<meta http-equiv="Content-Security-Policy" '
+        'content="default-src \'none\'; script-src \'unsafe-inline\'; '
+        'style-src \'unsafe-inline\'; img-src data: blob:; '
+        'font-src data:; media-src data: blob:; connect-src \'none\'; '
+        'frame-src \'none\'; object-src \'none\'; base-uri \'none\'; '
+        'form-action \'none\'">';
+    if (html.contains('Content-Security-Policy')) return html;
+    return '$csp\n$html';
+  }
+
   void _loadCreation() {
     final creations = ref.read(creationsProvider);
     try {
       final creation = creations.firstWhere((c) => c.id == widget.creationId);
-      _controller.loadHtmlString(creation.html);
+      _controller.loadHtmlString(_wrapWithCsp(creation.html));
     } catch (e) {
       setState(() {
         _error = AppLocalizations.of(context)!.creationNotFound;

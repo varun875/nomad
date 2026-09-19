@@ -31,6 +31,7 @@ import '../../core/widgets/rich_message_renderer.dart';
 import '../../core/widgets/nomad_widgets.dart';
 import '../../core/widgets/nomad_animations.dart';
 import '../../core/constants/responsive.dart';
+import '../../core/utils/live_transcript.dart';
 import '../../core/utils/message_text.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
@@ -112,7 +113,7 @@ class ChatScreen extends ConsumerStatefulWidget {
 }
 
 class _ChatScreenState extends ConsumerState<ChatScreen>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
   final _scrollController = ScrollController();
@@ -179,7 +180,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   final StringBuffer _streamBuffer = StringBuffer();
   bool _shouldStop = false;
   Timer? _sttSilenceTimer;
-  int _lastProcessedWordCount = 0;
 
   void _stopGeneration() {
     _shouldStop = true;
@@ -759,14 +759,45 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
     _loadPreferences();
     _checkAssistantTrigger();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // A warm-start assistant launch stashes its intent in MainActivity; pick it up
+    // whenever the app returns to the foreground.
+    if (state == AppLifecycleState.resumed) {
+      _checkAssistantTrigger();
+    }
   }
 
   Future<void> _checkAssistantTrigger() async {
+    // Make sure the voice engines are ready before we try to enter LiveMode,
+    // otherwise an assistant launch that arrives during startup can race STT
+    // init and silently fail to listen.
+    await _initVoiceEngines();
     try {
       const channel = MethodChannel('com.varun.nomad/storage');
-      final bool wasAssistant =
-          await channel.invokeMethod('checkAssistantTrigger');
-      if (wasAssistant && mounted) {
+      final dynamic res = await channel.invokeMethod('checkAssistantTrigger');
+      if (!mounted) return;
+      String? prompt;
+      bool wasAssistant = false;
+      if (res is Map) {
+        prompt = (res['prompt'] as String?)?.trim();
+        wasAssistant = res['assistant'] as bool? ?? false;
+      } else if (res == true) {
+        wasAssistant = true;
+      }
+      if (prompt != null && prompt.isNotEmpty) {
+        // Popup already transcribed the request - send it directly and speak
+        // the reply (do NOT enter in-app STT or it would grab the mic).
+        _controller.text = prompt;
+        setState(() {
+          _hasText = true;
+          _shouldSpeakResponse = true;
+        });
+        await _sendMessage();
+      } else if (wasAssistant && mounted) {
         // Nomad Live now lives in the chat composer, so launch straight into it.
         _enterLiveMode(isInitial: true);
       }
@@ -799,7 +830,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (status == 'done' && _isLiveMode) {
       // If it stopped but we are still in live mode, restart it
       // This might beep, but it's a fallback for when the engine times out
-      _enterLiveMode(skipStopTts: true);
+      _resumeListening();
     }
   }
 
@@ -811,39 +842,68 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       return;
     }
 
-    final allWords = result.recognizedWords.trim();
-    if (allWords.isEmpty) return;
-
-    // Get only the words since we last "sent" a message
-    // We use a simple substring approach or word split
-    String newWords = '';
-    if (_lastProcessedWordCount > 0 &&
-        _lastProcessedWordCount <= allWords.length) {
-      newWords = allWords.substring(_lastProcessedWordCount).trim();
-    } else if (_lastProcessedWordCount == 0 ||
-        allWords.length < _lastProcessedWordCount) {
-      _lastProcessedWordCount = 0;
-      newWords = allWords;
-    }
-
-    if (newWords.isEmpty) return;
+    // Latest partial wins: speech_to_text rewrites partials as it refines, so the
+    // newest result is the authoritative transcript (handles both growth and the
+    // "news today" -> "news" shrink) without duplicating text.
+    final merged =
+        mergePartialTranscript(_liveTranscript, result.recognizedWords);
+    if (merged == _liveTranscript) return;
 
     setState(() {
-      _liveTranscript = newWords;
+      _liveTranscript = merged;
     });
 
     _sttSilenceTimer?.cancel();
     _sttSilenceTimer = Timer(const Duration(milliseconds: 1500), () {
       if (mounted && _isLiveMode) {
-        // Save how much we've processed so far
-        _lastProcessedWordCount = allWords.length;
         _finalizeLiveTranscript();
       }
     });
 
     if (result.finalResult) {
-      _lastProcessedWordCount = allWords.length;
       _finalizeLiveTranscript();
+    }
+  }
+
+  /// Re-arms speech recognition without resetting transcript/speech state. Used to
+  /// resume listening after the engine times out or after a reply finishes.
+  Future<void> _resumeListening() async {
+    if (!_isLiveMode || _isLiveMuted) return;
+
+    // Silence system beeps on Android.
+    if (Platform.isAndroid) {
+      try {
+        const channel = MethodChannel('com.varun.nomad/storage');
+        await channel.invokeMethod('muteSystemSounds');
+        await channel.invokeMethod('muteMusicStream');
+      } catch (_) {}
+    }
+
+    try {
+      await _stt.listen(
+        onResult: _onSttResult,
+        onSoundLevelChange: (level) => _soundLevel.value = level,
+        listenOptions: SpeechListenOptions(
+          partialResults: true,
+          cancelOnError: true,
+          listenMode: ListenMode.dictation,
+          // onDevice: false -> Google network recognizer. The offline Soda
+          // engine on Samsung/MediaTek returns empty results (NO_SPEECH_DETECTED
+          // even when speech was detected) and caps sessions at 10s.
+          onDevice: false,
+          listenFor: const Duration(hours: 1), // Practically infinite
+          pauseFor: const Duration(seconds: 30), // Don't stop on short pauses
+        ),
+      );
+    } catch (_) {
+      // Mic permission denied or engine not initialized - don't leave UI stuck in live mode.
+      if (mounted) {
+        setState(() {
+          _isLiveMode = false;
+          _modeController.reverse();
+        });
+      }
+      await _tts.stop();
     }
   }
 
@@ -862,6 +922,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
 
     await _sendMessage();
+
+    // The reply has been spoken (TTS drained); keep listening if still live.
+    if (mounted && _isLiveMode && !_isLiveMuted) {
+      await _resumeListening();
+    }
   }
 
   Future<void> _toggleLiveMode() async {
@@ -881,8 +946,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     setState(() {
       _isLiveMode = true;
       _liveTranscript = '';
-      _lastProcessedWordCount = 0;
-      _shouldSpeakResponse = true;
+      _shouldSpeakResponse = !_isLiveMuted;
     });
     _closeAddMenu();
     _modeController.forward();
@@ -909,7 +973,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           partialResults: true,
           cancelOnError: true,
           listenMode: ListenMode.dictation,
-          onDevice: true,
+          // onDevice: false -> Google network recognizer. The offline Soda
+          // engine on Samsung/MediaTek returns empty results (NO_SPEECH_DETECTED
+          // even when speech was detected) and caps sessions at 10s.
+          onDevice: false,
           listenFor: const Duration(hours: 1), // Practically infinite
           pauseFor: const Duration(seconds: 30), // Don't stop on short pauses
         ),
@@ -926,6 +993,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   Future<void> _exitLiveMode() async {
     HapticFeedback.lightImpact();
+    _sttSilenceTimer?.cancel();
 
     // Revert the UI immediately so the morph back to the text composer feels
     // instant; the audio engines are torn down in the background afterwards.
@@ -959,7 +1027,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _stt.stop();
       _tts.stop();
     } else {
-      _enterLiveMode();
+      _resumeListening();
     }
   }
 
@@ -978,12 +1046,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _scrollController.dispose();
     _controller.dispose();
     _focusNode.dispose();
     _streamingTextNotifier.dispose();
     _modeController.dispose();
     _soundLevel.dispose();
+    _sttSilenceTimer?.cancel();
     _stt.stop();
     _tts.stop();
 

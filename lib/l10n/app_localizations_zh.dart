@@ -252,6 +252,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get cacheCleared => '缓存已清除';
 
   @override
+  String get couldntOpenAssistantSettings => 'Couldn\'t open assistant settings';
+
+  @override
   String searchingFor(Object query) {
     return '正在搜索\"$query\"...';
   }

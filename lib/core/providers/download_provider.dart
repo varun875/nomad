@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:background_downloader/background_downloader.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import '../models/hf_model.dart';
 import '../models/download_status.dart';
@@ -234,6 +237,36 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     }).toList();
   }
 
+  Future<String?> _fetchHfSha256(String modelId) async {
+    final pinned = ModelService.pinnedSha256For(modelId);
+    if (pinned != null && pinned.isNotEmpty) return pinned.toLowerCase();
+    final repo = ModelService.repoFor(modelId);
+    final filename = ModelService.filenameFor(modelId);
+    if (repo.isEmpty || filename.isEmpty) return null;
+    try {
+      final uri = Uri.https('huggingface.co', '/api/models/$repo');
+      final resp = await http
+          .get(uri, headers: {'Accept': 'application/json'}).timeout(
+              const Duration(seconds: 10));
+      if (resp.statusCode != 200) return null;
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final siblings = (data['siblings'] as List?) ?? const [];
+      for (final s in siblings) {
+        final m = s as Map<String, dynamic>;
+        if ((m['rfilename'] as String?) == filename) {
+          final sha = (m['sha256'] as String?) ?? (m['oid'] as String?);
+          if (sha != null && sha.length >= 32) return sha.toLowerCase();
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<String> _sha256OfFile(File file) async {
+    final digest = await sha256.bind(file.openRead()).first;
+    return digest.toString();
+  }
+
   Future<void> _markAsCompleted(String id) async {
     final matches = state.where((m) => m.id == id);
     if (matches.isEmpty) return;
@@ -271,6 +304,29 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
         'Please try again.',
       );
       return;
+    }
+
+    final expectedSha = await _fetchHfSha256(id);
+    if (expectedSha != null && expectedSha.isNotEmpty) {
+      try {
+        final actualSha = await _sha256OfFile(file);
+        if (actualSha.toLowerCase() != expectedSha.toLowerCase()) {
+          print('ERROR: SHA256 mismatch for $id: expected $expectedSha got $actualSha');
+          try {
+            await file.delete();
+          } catch (_) {}
+          _markAsFailed(
+            id,
+            'Download corrupted (checksum mismatch). Please try again.',
+          );
+          return;
+        }
+        print('SHA256 verified for $id');
+      } catch (e) {
+        print('WARN: SHA256 check failed for $id: $e (keeping file)');
+      }
+    } else {
+      print('WARN: No SHA256 available for $id — skipping hash check (size check passed)');
     }
 
     print(

@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
+import '../../core/utils/logger.dart';
+
 class TtsService {
   static final TtsService _instance = TtsService._internal();
   factory TtsService() => _instance;
@@ -16,12 +18,17 @@ class TtsService {
   bool _isSpeaking = false;
   bool _muted = false;
   Completer<void>? _currentCompleter;
+  Completer<void>? _initReady;
 
   bool get isSpeaking => _isSpeaking;
 
+  /// Completes once [_init] finishes so [speak] never races engine startup.
+  Future<void> get ready => (_initReady ??= Completer<void>()).future;
+
   Future<void> _init() async {
+    _initReady = Completer<void>();
     try {
-      print("TTS: Initializing...");
+      Log.d('TTS', 'Initializing...');
       await _tts.setVolume(1.0);
       await _tts.setLanguage("en-US");
 
@@ -35,7 +42,7 @@ class TtsService {
       await _tts.awaitSpeakCompletion(true);
       
       _tts.setCompletionHandler(() {
-        print("TTS: Speech completed");
+        Log.d('TTS', 'Speech completed');
         _isSpeaking = false;
         _currentCompleter?.complete();
         _currentCompleter = null;
@@ -44,7 +51,7 @@ class TtsService {
       });
 
       _tts.setCancelHandler(() {
-        print("TTS: Speech cancelled");
+        Log.d('TTS', 'Speech cancelled');
         _isSpeaking = false;
         _currentCompleter?.complete();
         _currentCompleter = null;
@@ -52,7 +59,7 @@ class TtsService {
       });
 
       _tts.setErrorHandler((msg) {
-        print("TTS: Speech error: $msg");
+        Log.d('TTS', 'Speech error: $msg');
         _isSpeaking = false;
         // Complete normally so await speak() in chat_screen doesn't abort the reply persist.
         _currentCompleter?.complete();
@@ -60,10 +67,11 @@ class TtsService {
         _remuteMusicIfNeeded();
         _processQueue();
       });
-      print("TTS: Initialization complete");
+      Log.d('TTS', 'Initialization complete');
     } catch (e) {
-      print("TTS Init Error: $e");
+      Log.e('TTS', 'Init error', e);
     }
+    _initReady!.complete();
   }
 
   /// flutter_tts maps speech rate to 0..1 but engines interpret it very
@@ -145,9 +153,9 @@ class TtsService {
         'locale': (best['locale'] ?? 'en-US').toString(),
       };
       await _tts.setVoice(voiceArg);
-      print("TTS: Selected voice: ${voiceArg['name']} (${voiceArg['locale']})");
+        Log.d('TTS', 'Selected voice: ${voiceArg['name']} (${voiceArg['locale']})');
     } catch (e) {
-      print("TTS: voice selection failed: $e");
+        Log.d('TTS', 'voice selection failed: $e');
     }
   }
 
@@ -160,7 +168,8 @@ class TtsService {
 
   Future<void> speak(String text) async {
     if (_muted || text.isEmpty) return;
-    
+    await ready;
+
     final completer = Completer<void>();
     _queue.add(_TtsTask(text, completer));
     
@@ -187,7 +196,7 @@ class TtsService {
       // Ensure music is unmuted so user can hear TTS
       await _unmuteMusic();
       
-      print("TTS: Speaking: ${task.text}");
+      Log.d('TTS', 'Speaking: ${task.text}');
       await _tts.speak(task.text);
     } catch (e) {
       _isSpeaking = false;

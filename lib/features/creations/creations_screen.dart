@@ -554,14 +554,36 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
     }
   }
 
+  static String _wrapWithCsp(String html) {
+    const csp =
+        '<meta http-equiv="Content-Security-Policy" '
+        'content="default-src \'none\'; script-src \'unsafe-inline\'; '
+        'style-src \'unsafe-inline\'; img-src data: blob:; '
+        'font-src data:; media-src data: blob:; connect-src \'none\'; '
+        'frame-src \'none\'; object-src \'none\'; base-uri \'none\'; '
+        'form-action \'none\'">';
+    if (html.contains('Content-Security-Policy')) return html;
+    return '$csp\n$html';
+  }
+
   void _showPreview(BuildContext context, Creation creation) {
     if (creation.html.isEmpty) return;
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
-    
+
     final webViewController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(nomad.background)
-      ..loadHtmlString(creation.html);
+      ..setNavigationDelegate(NavigationDelegate(
+        onNavigationRequest: (req) {
+          if (req.url == 'about:blank' ||
+              req.url.startsWith('data:') ||
+              req.url.startsWith('blob:')) {
+            return NavigationDecision.navigate;
+          }
+          return NavigationDecision.prevent;
+        },
+      ))
+      ..loadHtmlString(_wrapWithCsp(creation.html));
 
     Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute(

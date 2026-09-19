@@ -160,4 +160,39 @@ class ModelService {
 
   /// Whether the model requires a HuggingFace auth token to download
   static bool modelNeedsAuth(String modelId) => false;
+
+  static String _repoFor(String modelId) {
+    switch (modelId) {
+      case 'nomad-lite-qwen-3.5-0.8b':
+        return 'unsloth/Qwen3.5-0.8B-GGUF';
+      case 'nomad-steady-gemma4-e2b':
+        return 'unsloth/gemma-4-E2B-it-qat-mobile-GGUF';
+      case 'nomad-smart-gemma4-e4b':
+        return 'Finn-Technologies/e1';
+      default:
+        return '';
+    }
+  }
+
+  static String _filenameFor(String modelId) {
+    switch (modelId) {
+      case 'nomad-lite-qwen-3.5-0.8b':
+        return 'Qwen3.5-0.8B-Q4_K_M.gguf';
+      case 'nomad-steady-gemma4-e2b':
+        return 'gemma-4-E2B-it-qat-UD-Q2_K_XL.gguf';
+      case 'nomad-smart-gemma4-e4b':
+        return 'e1.Q4_K_M.gguf';
+      default:
+        return '';
+    }
+  }
+
+  static const _pinnedSha256 = <String, String>{
+    // Fill with hf hub sha256 once known, e.g. 'nomad-lite-qwen-3.5-0.8b': 'abc...',
+  };
+
+  static String? pinnedSha256For(String modelId) => _pinnedSha256[modelId];
+
+  static String repoFor(String modelId) => _repoFor(modelId);
+  static String filenameFor(String modelId) => _filenameFor(modelId);
 }

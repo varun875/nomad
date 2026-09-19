@@ -1,17 +1,17 @@
 import 'package:llamadart/llamadart.dart';
-import 'duckduckgo_search_provider.dart';
 import 'search_provider.dart';
+import 'tinyfish_search_provider.dart';
 
 /// Facade for web search backed by a pluggable [WebSearchProvider].
 ///
-/// Defaults to the zero-config DuckDuckGo scraper (free, no key).
-/// A self-hosted SearXNG instance can be used instead.
+/// Defaults to TinyFish via Monid (free live search, no anti-bot blocks).
+/// DuckDuckGo or a self-hosted SearXNG instance can also be used.
 class SearchService {
   static final SearchService _instance = SearchService._internal();
   factory SearchService() => _instance;
   SearchService._internal();
 
-  WebSearchProvider _provider = const DuckDuckGoProvider();
+  WebSearchProvider _provider = const TinyFishSearchProvider();
 
   /// The currently active search backend.
   WebSearchProvider get provider => _provider;

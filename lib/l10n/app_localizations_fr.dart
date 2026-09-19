@@ -252,6 +252,9 @@ class AppLocalizationsFr extends AppLocalizations {
   String get cacheCleared => 'Cache vidé';
 
   @override
+  String get couldntOpenAssistantSettings => 'Couldn\'t open assistant settings';
+
+  @override
   String searchingFor(Object query) {
     return 'Recherche de \"$query\"...';
   }

@@ -28,7 +28,8 @@ Attach an image with the paperclip button and Nomad describes, reads, and reason
 
 Toggle the globe icon and Nomad becomes an agent — it decides when to search, calls a `web_search` tool, reads the results, and answers based on what it found:
 
-- **DuckDuckGo** — zero-config, free, no key needed (default)
+- **TinyFish** — live, uncached browser-rendered search, 100% free via Monid, no anti-bot blocks (default)
+- **DuckDuckGo** — zero-config HTML scraper fallback
 - **SearXNG** — self-host an instance, point Nomad at your URL
 
 When search is off, everything runs 100% offline.

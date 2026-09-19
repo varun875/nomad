@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:llamadart/llamadart.dart' hide ChatSession;
 import 'package:path/path.dart' as p;
 
@@ -10,8 +11,9 @@ import 'package:path/path.dart' as p;
 /// commands. All operations are sandboxed to the project root.
 class NomadAgentService {
   final String projectPath;
+  final bool allowShell;
 
-  NomadAgentService({required this.projectPath});
+  NomadAgentService({required this.projectPath, this.allowShell = false});
 
   /// Resolve a (possibly relative) path against the project root and
   /// reject any path that escapes the sandbox.
@@ -39,7 +41,7 @@ class NomadAgentService {
         writeFileTool,
         listDirTool,
         searchTool,
-        runCommandTool,
+        if (allowShell) runCommandTool,
       ];
 
   ToolDefinition get readFileTool => ToolDefinition(
@@ -217,6 +219,19 @@ class NomadAgentService {
         },
       );
 
+  static const _allowedCommands = {
+    'ls', 'cat', 'head', 'tail', 'wc', 'find', 'grep', 'rg', 'git', 'dart',
+    'flutter', 'npm', 'pnpm', 'yarn', 'node', 'python', 'python3', 'pip',
+    'cargo', 'go', 'make', 'cmake', 'gradle', './gradlew', 'pwd', 'echo',
+    'stat', 'file', 'diff', 'tree',
+  };
+
+  static bool isAllowedShellCommand(String command) {
+    final first = command.trim().split(RegExp(r'\s+')).first;
+    final base = first.split('/').last;
+    return _allowedCommands.contains(first) || _allowedCommands.contains(base);
+  }
+
   ToolDefinition get runCommandTool => ToolDefinition(
         name: 'run_command',
         description:
@@ -233,6 +248,11 @@ class NomadAgentService {
         handler: (params) async {
           final command = params.getRequiredString('command').trim();
           if (command.isEmpty) return 'Error: empty command';
+          if (!isAllowedShellCommand(command)) {
+            return 'Error: command not allowed: "${command.split(RegExp(r'\s+')).first}". '
+                'Allowed: ${_allowedCommands.join(", ")}';
+          }
+          debugPrint('[NomadAgent] run_command: $command (cwd=$projectPath)');
           return _runShell(command, cwd: projectPath);
         },
       );

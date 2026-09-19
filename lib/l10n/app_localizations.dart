@@ -589,6 +589,12 @@ abstract class AppLocalizations {
   /// **'Cache cleared'**
   String get cacheCleared;
 
+  /// Error shown when the system assistant settings screen can't be opened
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t open assistant settings'**
+  String get couldntOpenAssistantSettings;
+
   /// No description provided for @searchingFor.
   ///
   /// In en, this message translates to:

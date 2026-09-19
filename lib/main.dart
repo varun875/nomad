@@ -21,7 +21,7 @@ import 'features/settings/license_screen.dart';
 import 'core/widgets/nomad_shell.dart';
 import 'core/services/inference_service.dart';
 import 'core/services/search_service.dart';
-import 'core/services/searxng_search_provider.dart';
+import 'core/services/tinyfish_search_provider.dart';
 import 'core/services/memory_service.dart';
 import 'core/services/performance_service.dart';
 import 'core/services/download_notification_service.dart';
@@ -31,6 +31,7 @@ import 'features/you/you_screen.dart';
 import 'features/skills/skills_screen.dart';
 
 import 'package:hive_flutter/hive_flutter.dart';
+import 'core/services/secure_storage_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -53,10 +54,10 @@ void main() async {
   await Future.wait([
     Hive.openBox('models'),
     Hive.openBox('settings'),
-    Hive.openBox('chats'),
-    Hive.openBox('creations'),
-    Hive.openBox('nomad_code_projects'),
-    Hive.openBox('memories'),
+    SecureStorageService.openEncryptedBox('chats'),
+    SecureStorageService.openEncryptedBox('creations'),
+    SecureStorageService.openEncryptedBox('nomad_code_projects'),
+    SecureStorageService.openEncryptedBox('memories'),
   ]);
   final startup = await Future.wait<dynamic>([
     SharedPreferences.getInstance(),
@@ -65,12 +66,8 @@ void main() async {
   final prefs = startup.first as SharedPreferences;
   final onboarded = prefs.getBool('onboarded') ?? false;
 
-  // Web search: DuckDuckGo free scraper by default, or self-hosted
-  // SearXNG if `searxng_url` is set.
-  final searxngUrl = prefs.getString('searxng_url');
-  if (searxngUrl != null && searxngUrl.trim().isNotEmpty) {
-    SearchService().configure(SearxngProvider(baseUrl: searxngUrl.trim()));
-  }
+  // Web search: TinyFish live search powered by Monid (100% free, reliable)
+  SearchService().configure(const TinyFishSearchProvider());
 
   // Pre-warm the model on app start so the first message is near-instant
   if (onboarded) {

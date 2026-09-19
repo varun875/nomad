@@ -26,7 +26,6 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _showTokenSpeed = false;
-  bool _isAssistantEnabled = false;
   int? _threadOverride;
 
   @override
@@ -40,7 +39,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     if (mounted) {
       setState(() {
         _showTokenSpeed = prefs.getBool('showTokenSpeed') ?? false;
-        _isAssistantEnabled = prefs.getBool('isAssistantEnabled') ?? false;
         _threadOverride = prefs.getInt(
           InferenceService.generationThreadsPreference,
         );
@@ -55,14 +53,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     if (mounted) setState(() => _showTokenSpeed = value);
   }
 
-  Future<void> _toggleAssistant(bool value) async {
+  Future<void> _openAssistantSettings() async {
     HapticFeedback.selectionClick();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('isAssistantEnabled', value);
-    if (mounted) setState(() => _isAssistantEnabled = value);
-    
-    // In a real implementation, we would trigger platform-specific code here
-    // for Android's ACTION_VOICE_ASSISTANT_SETTINGS or similar.
+    final l10n = AppLocalizations.of(context);
+    final message =
+        l10n?.couldntOpenAssistantSettings ?? 'Couldn\'t open assistant settings';
+    try {
+      const channel = MethodChannel('com.varun.nomad/storage');
+      final dynamic ok = await channel.invokeMethod('openAssistantSettings');
+      if (ok != true && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message)),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message)),
+        );
+      }
+    }
   }
 
   Future<void> _chooseDecodeThreads() async {
@@ -175,12 +185,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       title: 'Digital Assistant',
                       subtitle: 'Use Nomad as your default assistant (Android)',
                       icon: Icons.assistant_rounded,
-                      trailing: CupertinoSwitch(
-                        value: _isAssistantEnabled,
-                        activeTrackColor: nomad.textPrimary,
-                        onChanged: _toggleAssistant,
-                      ),
-                      onTap: () => _toggleAssistant(!_isAssistantEnabled),
+                      showChevron: true,
+                      onTap: _openAssistantSettings,
                     ),
                     const SizedBox(height: 28),
                     const _SectionLabel(label: 'Data'),

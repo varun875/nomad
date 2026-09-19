@@ -47,3 +47,9 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 /android/build/
+
+# Local tools & editor cache
+.commandcode/
+.opencode/
+opencode.json
+tui.json

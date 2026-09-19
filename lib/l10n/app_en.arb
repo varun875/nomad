@@ -219,6 +219,10 @@
   "modelArchitectureUnsupported": "Model architecture unsupported. Please try a standard Gemma model for now.",
   "inferenceError": "Inference Error",
   "cacheCleared": "Cache cleared",
+  "couldntOpenAssistantSettings": "Couldn't open assistant settings",
+  "@couldntOpenAssistantSettings": {
+    "description": "Error shown when the system assistant settings screen can't be opened"
+  },
   "searchingFor": "Searching for \"{query}\"...",
   "sources": "Sources",
   "searched": "Searched",

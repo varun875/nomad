@@ -15,7 +15,10 @@
         android:label="Nomad"
         android:name="${applicationName}"
         android:icon="@mipmap/launcher_icon"
-        android:largeHeap="true">
+        android:largeHeap="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules">
         <activity
             android:name=".MainActivity"
             android:exported="true"
