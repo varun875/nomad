@@ -1,6 +1,7 @@
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:llamadart/llamadart.dart';
+import 'secure_storage_service.dart';
 
 class Memory {
   final String id;
@@ -38,7 +39,10 @@ class MemoryService {
   static const String _boxName = 'memories';
 
   Future<void> init() async {
-    await Hive.openBox(_boxName);
+    // Match main.dart: the memories box must be opened with the same AES
+    // cipher. Using plain Hive.openBox here could win the startup race and
+    // create an unencrypted box for data the user expects to be encrypted.
+    await SecureStorageService.openEncryptedBox(_boxName);
   }
 
   List<Memory> getAllMemories() {

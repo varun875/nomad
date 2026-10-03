@@ -226,10 +226,93 @@ class NomadAgentService {
     'stat', 'file', 'diff', 'tree',
   };
 
-  static bool isAllowedShellCommand(String command) {
-    final first = command.trim().split(RegExp(r'\s+')).first;
-    final base = first.split('/').last;
-    return _allowedCommands.contains(first) || _allowedCommands.contains(base);
+  /// Characters that let the shell chain commands, substitute, redirect, or
+  /// expand beyond the intended program. Commands run through `sh -c` / `cmd
+  /// /C`, so any of these can turn an "allowed" first token into arbitrary
+  /// execution (`git; rm -rf ~`).
+  static final _shellMetacharacters = RegExp(r'[;&|`$><(){}\n\r\\~]');
+
+  /// Flags that let a language runtime execute arbitrary inline code, which
+  /// defeats the command allowlist (`python -c "..."`, `node -e "..."`).
+  static const _inlineCodeFlags = <String, Set<String>>{
+    'python': {'-c'},
+    'python3': {'-c'},
+    'node': {'-e', '--eval', '-p', '--print'},
+  };
+
+  /// Returns an error message if [command] is unsafe to run, or null if it is
+  /// allowed. Unlike the previous first-token check this rejects shell
+  /// metacharacters, interprets the actual arguments, blocks inline-code flags,
+  /// and keeps path arguments inside the project root.
+  String? _shellCommandError(String command) {
+    final trimmed = command.trim();
+    if (trimmed.isEmpty) return 'empty command';
+    if (_shellMetacharacters.hasMatch(trimmed)) {
+      return 'shell metacharacters (chaining, redirection, expansion) are not '
+          'allowed';
+    }
+    final tokens = _tokenize(trimmed);
+    if (tokens == null || tokens.isEmpty) return 'could not parse command';
+    final first = tokens.first;
+    final base = first.split(RegExp(r'[/\\]')).last;
+    if (!_allowedCommands.contains(first) &&
+        !_allowedCommands.contains(base)) {
+      return 'command not allowed: "$base"';
+    }
+    final blockedFlags = _inlineCodeFlags[base];
+    if (blockedFlags != null) {
+      for (final token in tokens.skip(1)) {
+        if (blockedFlags.contains(token)) {
+          return 'inline code flag "$token" is not allowed';
+        }
+      }
+    }
+    // Keep path-like arguments inside the project root so commands cannot
+    // read files outside the sandbox (e.g. `cat ../../secrets`).
+    final root = p.normalize(projectPath);
+    for (final token in tokens.skip(1)) {
+      if (token.isEmpty || token.startsWith('-')) continue;
+      if (token.contains('://')) continue; // URLs are handled by the program
+      final abs = p.normalize(
+          p.isAbsolute(token) ? token : p.join(projectPath, token));
+      if (!p.isWithin(root, abs) && abs != root) {
+        return 'path "$token" is outside the project root';
+      }
+    }
+    return null;
+  }
+
+  /// Quote-aware tokenizer. Returns null for an unterminated quote.
+  static List<String>? _tokenize(String command) {
+    final tokens = <String>[];
+    final buf = StringBuffer();
+    var quote = '';
+    for (var i = 0; i < command.length; i++) {
+      final ch = command[i];
+      if (quote.isNotEmpty) {
+        if (ch == quote) {
+          quote = '';
+        } else {
+          buf.write(ch);
+        }
+        continue;
+      }
+      if (ch == '"' || ch == "'") {
+        quote = ch;
+        continue;
+      }
+      if (ch == ' ' || ch == '\t') {
+        if (buf.isNotEmpty) {
+          tokens.add(buf.toString());
+          buf.clear();
+        }
+        continue;
+      }
+      buf.write(ch);
+    }
+    if (quote.isNotEmpty) return null;
+    if (buf.isNotEmpty) tokens.add(buf.toString());
+    return tokens;
   }
 
   ToolDefinition get runCommandTool => ToolDefinition(
@@ -248,11 +331,11 @@ class NomadAgentService {
         handler: (params) async {
           final command = params.getRequiredString('command').trim();
           if (command.isEmpty) return 'Error: empty command';
-          if (!isAllowedShellCommand(command)) {
-            return 'Error: command not allowed: "${command.split(RegExp(r'\s+')).first}". '
-                'Allowed: ${_allowedCommands.join(", ")}';
+          final error = _shellCommandError(command);
+          if (error != null) {
+            return 'Error: $error. Allowed: ${_allowedCommands.join(", ")}';
           }
-          debugPrint('[NomadAgent] run_command: $command (cwd=$projectPath)');
+          debugPrint('[NomadAgent] run_command invoked');
           return _runShell(command, cwd: projectPath);
         },
       );

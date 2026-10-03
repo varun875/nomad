@@ -12,6 +12,7 @@ import '../../core/theme/nomad_theme.dart';
 import '../../core/widgets/nomad_widgets.dart';
 import '../../core/widgets/nomad_animations.dart';
 import '../../core/services/inference_service.dart';
+import '../../core/services/search_service.dart';
 import '../../features/chat/chat_screen.dart';
 import '../../features/creations/creations_screen.dart';
 import '../../l10n/app_localizations.dart';
@@ -27,6 +28,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _showTokenSpeed = false;
   int? _threadOverride;
+  bool _searchKeySet = false;
 
   @override
   void initState() {
@@ -36,12 +38,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _loadPreference() async {
     final prefs = await SharedPreferences.getInstance();
+    final hasSearchKey = await SearchService().hasTinyFishKey();
     if (mounted) {
       setState(() {
         _showTokenSpeed = prefs.getBool('showTokenSpeed') ?? false;
         _threadOverride = prefs.getInt(
           InferenceService.generationThreadsPreference,
         );
+        _searchKeySet = hasSearchKey;
       });
     }
   }
@@ -72,6 +76,76 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           SnackBar(content: Text(message)),
         );
       }
+    }
+  }
+
+  Future<void> _editSearchKey() async {
+    HapticFeedback.selectionClick();
+    final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
+    final textTheme = Theme.of(context).textTheme;
+    final existing = await SearchService().readTinyFishApiKey();
+    if (!mounted) return;
+    final controller = TextEditingController(text: existing);
+    final saved = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: nomad.surface,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(NomadRadii.dialog)),
+        title: Text('TinyFish API key', style: textTheme.headlineMedium),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Paste your own Monid API key to enable live web search. It is '
+              'stored in this device\'s secure keychain. Leave empty to use '
+              'DuckDuckGo.',
+              style: textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              obscureText: true,
+              decoration: const InputDecoration(hintText: 'monid_live_...'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              Navigator.pop(dialogContext, '');
+            },
+            child: Text('Clear',
+                style: textTheme.bodyMedium
+                    ?.copyWith(color: nomad.textSecondary)),
+          ),
+          TextButton(
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              Navigator.pop(dialogContext, controller.text);
+            },
+            child: Text('Save',
+                style: textTheme.bodyMedium?.copyWith(
+                    color: nomad.textPrimary, fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (saved == null) return;
+    await SearchService().setTinyFishApiKey(saved);
+    if (mounted) {
+      setState(() => _searchKeySet = saved.trim().isNotEmpty);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(saved.trim().isEmpty
+              ? 'Web search: DuckDuckGo'
+              : 'Web search: TinyFish enabled'),
+        ),
+      );
     }
   }
 
@@ -187,6 +261,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       icon: Icons.assistant_rounded,
                       showChevron: true,
                       onTap: _openAssistantSettings,
+                    ),
+                    const SizedBox(height: 16),
+                    _StickerTile(
+                      title: 'Web Search',
+                      subtitle: _searchKeySet
+                          ? 'TinyFish · Monid key set'
+                          : 'DuckDuckGo · tap to add a Monid key',
+                      icon: Icons.travel_explore_rounded,
+                      showChevron: true,
+                      onTap: _editSearchKey,
                     ),
                     const SizedBox(height: 28),
                     const _SectionLabel(label: 'Data'),

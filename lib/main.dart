@@ -21,7 +21,6 @@ import 'features/settings/license_screen.dart';
 import 'core/widgets/nomad_shell.dart';
 import 'core/services/inference_service.dart';
 import 'core/services/search_service.dart';
-import 'core/services/tinyfish_search_provider.dart';
 import 'core/services/memory_service.dart';
 import 'core/services/performance_service.dart';
 import 'core/services/download_notification_service.dart';
@@ -66,8 +65,8 @@ void main() async {
   final prefs = startup.first as SharedPreferences;
   final onboarded = prefs.getBool('onboarded') ?? false;
 
-  // Web search: TinyFish live search powered by Monid (100% free, reliable)
-  SearchService().configure(const TinyFishSearchProvider());
+  // Web search: TinyFish (per-user Monid key) when configured, else DuckDuckGo.
+  await SearchService().loadFromStorage();
 
   // Pre-warm the model on app start so the first message is near-instant
   if (onboarded) {

@@ -1,0 +1,7 @@
+name: nomad_code_server
+description: Standalone OpenAI-compatible API server for Nomad GGUF models.
+publish_to: none
+environment:
+  sdk: ">=3.10.7 <4.0.0"
+dependencies:
+  llamadart: ^0.8.19

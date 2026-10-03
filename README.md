@@ -14,15 +14,17 @@ But it can also search the web when you want it to, combining the privacy of loc
 
 | Model | Size | RAM | What it's good at |
 |-------|------|-----|-------------------|
+| Nomad Nano | 229 MB | 2 GB+ | Ultra-compact VLM: sub-250ms vision, runs on 2GB RAM |
 | Nomad Lite | 533 MB | 3 GB+ | Vision-capable, ultra-fast, sub-1B |
 | Nomad Steady | 2.5 GB | 5 GB+ | Multimodal reasoning, vision, balanced speed |
 | Nomad Smart | 5.3 GB | 7 GB+ | Flagship: vision, complex analysis, deep reasoning |
+| Nomad Pro | 6.0 GB | 16 GB | Powerhouse: coding, agentic tool use, multi-step reasoning |
 
-All models are GGUF quantizations of Qwen 3.5 0.8B (Lite) and Gemma 4 E2B/E4B (Steady/Smart), downloaded directly from Hugging Face inside the app via the public CDN (no token needed).
+All models are GGUF quantizations of LFM 2.5 VL 450M (Nano), Qwen 3.5 0.8B (Lite), Gemma 4 E2B/E4B (Steady/Smart), and MiMo V2.6 Distill 9B (Pro), downloaded directly from Hugging Face inside the app via the public CDN (no token needed).
 
 ### Vision
 
-Attach an image with the paperclip button and Nomad describes, reads, and reasons about it. All three model tiers are vision-capable via native multimodality.
+Attach an image with the paperclip button and Nomad describes, reads, and reasons about it. All model tiers are vision-capable via native multimodality.
 
 ### Web Search (Agentic)
 
@@ -41,6 +43,10 @@ Describe an HTML/CSS/JS mini-app in natural language and Nomad Lite will build i
 ### Conversation History
 
 Every chat auto-saves. The history sidebar lets you browse, rename, or delete past conversations. When you tap an old chat, the model used for that conversation is automatically restored.
+
+### Nomad Code Server (Desktop)
+
+Nomad's desktop app stores downloaded models in `Documents/Nomad/models`, which can also be served to coding tools through the standalone OpenAI-compatible API in [`server/`](server/README.md). Start it with Dart and point OpenCode or another harness at `http://127.0.0.1:8787/v1`. The server exposes downloaded models through `/v1/models` and text chat through `/v1/chat/completions`.
 
 ### Context Management
 
@@ -67,7 +73,7 @@ The entire interface is translated into 6 languages:
 | Italian  | it     |
 | Chinese  | zh     |
 
-### Engineered for 4–6 GB Phones
+### Engineered for 2–6 GB Phones
 
 Smooth at the low end, not just on flagships: big-core-aware thread detection (avoids the MediaTek efficiency-core scheduling collapse), flash attention + quantized KV cache (≈50% less RAM), lazy vision-encoder loading on constrained devices, adaptive streaming throttle, and serialized model loads to prevent native OOM spikes.
 
@@ -75,7 +81,7 @@ Smooth at the low end, not just on flagships: big-core-aware thread detection (a
 
 ### Prerequisites
 
-- Android device with 4 GB+ RAM (8 GB recommended for Nomad Smart)
+- Android device with 2 GB+ RAM (4 GB+ recommended for Lite, 8 GB for Smart, 16 GB for Pro)
 - Flutter SDK (stable) for development
 - Android Studio, VS Code, or IntelliJ
 
@@ -152,11 +158,8 @@ Nomad is built with privacy as a hard requirement:
 - **No telemetry** — zero analytics, zero tracking
 - **No internet needed** — fully offline when search is toggled off
 
-## What's New in v0.1.0
+## What's New in v0.2.0
 
-- **Gemma 4 models** — Steady (Gemma 4 E2B QAT) and Smart (e1, a Gemma 4 E4B fine-tune) replace the previous Qwen general models with native vision and mmproj auto-download
-- **Vision for all models** — Lite (Qwen 3.5 0.8B), Steady, and Smart all support image attachments
-- **Agentic web search** — the model decides when to search via tool calling; DuckDuckGo / SearXNG (free)
-- **MediaTek performance fix** — generation threads are now sized to big cores, eliminating a ~100× decode collapse on A76/A55 chipsets
-- **Low-RAM hardening** — serialized model loads, lazy vision encoder on 4–6 GB phones, quantized KV cache
-- **Faster cold start & streaming** — deferred service init and scoped rebuilds keep low-end devices smooth
+- **Nomad Nano tier** — Liquid AI LFM 2.5 VL 450M (`Q4_K_M`, 229 MB) bringing vision & chat to ultra-low-memory 2 GB RAM devices
+- **Nomad Pro tier** — Xiaomi MiMo V2.6 Distill 9B (`Q4_K_M`) powerhouse for coding, tool use, and multi-step reasoning on 16GB devices
+- **TinyFish Web Search** — live, uncached browser-rendered search via Monid as default web search (100% free, fast, bypasses anti-bot blocks)

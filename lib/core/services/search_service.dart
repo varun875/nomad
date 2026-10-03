@@ -1,24 +1,71 @@
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:llamadart/llamadart.dart';
+import '../utils/logger.dart';
+import 'duckduckgo_search_provider.dart';
 import 'search_provider.dart';
 import 'tinyfish_search_provider.dart';
 
 /// Facade for web search backed by a pluggable [WebSearchProvider].
 ///
-/// Defaults to TinyFish via Monid (free live search, no anti-bot blocks).
-/// DuckDuckGo or a self-hosted SearXNG instance can also be used.
+/// Uses TinyFish via Monid when the user has supplied their own API key
+/// (Settings -> Web Search), otherwise falls back to the keyless DuckDuckGo
+/// provider. The key is stored in the platform keychain, never in the repo.
 class SearchService {
   static final SearchService _instance = SearchService._internal();
   factory SearchService() => _instance;
   SearchService._internal();
 
-  WebSearchProvider _provider = const TinyFishSearchProvider();
+  static const _tinyFishKeyStorage = 'monid_api_key';
+  static const _secureStorage = FlutterSecureStorage();
+
+  WebSearchProvider _provider = const DuckDuckGoProvider();
 
   /// The currently active search backend.
   WebSearchProvider get provider => _provider;
 
-  /// Swap the search backend at runtime (e.g. DuckDuckGo -> SearXNG).
+  /// Swap the search backend at runtime (e.g. DuckDuckGo -> TinyFish).
   void configure(WebSearchProvider provider) {
     _provider = provider;
+  }
+
+  /// Whether a TinyFish/Monid key is currently stored.
+  Future<bool> hasTinyFishKey() async =>
+      (await readTinyFishApiKey()).isNotEmpty;
+
+  /// Returns the stored Monid key, or an empty string if none is set.
+  Future<String> readTinyFishApiKey() async {
+    try {
+      return (await _secureStorage.read(key: _tinyFishKeyStorage))?.trim() ?? '';
+    } catch (e) {
+      Log.w('Search', 'Could not read Monid API key: $e');
+      return '';
+    }
+  }
+
+  /// Stores (or clears, when [key] is empty) the user's Monid key and applies
+  /// it to the active provider immediately.
+  Future<void> setTinyFishApiKey(String key) async {
+    final trimmed = key.trim();
+    try {
+      if (trimmed.isEmpty) {
+        await _secureStorage.delete(key: _tinyFishKeyStorage);
+      } else {
+        await _secureStorage.write(key: _tinyFishKeyStorage, value: trimmed);
+      }
+    } catch (e) {
+      Log.w('Search', 'Could not save Monid API key: $e');
+    }
+    await loadFromStorage();
+  }
+
+  /// Reads the stored key and selects the matching backend. Falls back to
+  /// DuckDuckGo when no key is stored or the keychain is unavailable, so search
+  /// never hard-fails.
+  Future<void> loadFromStorage() async {
+    final key = await readTinyFishApiKey();
+    configure(key.isEmpty
+        ? const DuckDuckGoProvider()
+        : TinyFishSearchProvider(apiKey: key));
   }
 
   /// Search the web and return the top [maxResults] snippets.

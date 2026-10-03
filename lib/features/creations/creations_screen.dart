@@ -562,7 +562,10 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
         'font-src data:; media-src data: blob:; connect-src \'none\'; '
         'frame-src \'none\'; object-src \'none\'; base-uri \'none\'; '
         'form-action \'none\'">';
-    if (html.contains('Content-Security-Policy')) return html;
+    // Always enforce our strict policy rather than trusting page-supplied
+    // CSP. Browsers enforce the intersection of every CSP policy, so content
+    // that injects its own permissive policy (e.g. connect-src *) still
+    // cannot relax the connect-src 'none' / frame-src 'none' rules below.
     return '$csp\n$html';
   }
 

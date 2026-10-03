@@ -232,12 +232,11 @@ class SkillsScreen extends ConsumerWidget {
       final result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['md'],
-        withData: true,
       );
-      if (result == null || result.files.isEmpty) return;
+      if (result == null || result.isEmpty) return;
 
-      final file = result.files.first;
-      final bytes = file.bytes;
+      final file = result.first;
+      final bytes = await file.readAsBytes();
       if (bytes == null && file.path != null) {
         final f = File(file.path!);
         if (!await f.exists()) return;

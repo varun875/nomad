@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:http/http.dart' as http;
 import 'search_provider.dart';
 
@@ -16,46 +18,75 @@ class SearxngProvider implements WebSearchProvider {
   /// Base URL of the SearXNG instance, e.g. `https://searx.be`.
   final String baseUrl;
 
-  static bool isAllowedSearxngUrl(String raw) {
+  /// True for addresses we must never let the search request reach: loopback,
+  /// link-local (incl. cloud metadata 169.254.169.254), private, CGNAT,
+  /// multicast, and IPv4-mapped equivalents.
+  static bool _isBlockedAddress(InternetAddress addr) {
+    if (addr.isLoopback || addr.isLinkLocal || addr.isMulticast) return true;
+    final bytes = addr.rawAddress;
+    if (addr.type == InternetAddressType.IPv4) {
+      final first = bytes[0];
+      final second = bytes[1];
+      if (first == 0) return true; // 0.0.0.0/8
+      if (first == 10) return true; // RFC1918
+      if (first == 127) return true; // loopback
+      if (first == 169 && second == 254) return true; // link-local / metadata
+      if (first == 192 && second == 168) return true; // RFC1918
+      if (first == 172 && second >= 16 && second <= 31) return true; // RFC1918
+      if (first == 100 && second >= 64 && second <= 127) return true; // CGNAT
+      if (first >= 224) return true; // multicast / reserved
+      return false;
+    }
+    // IPv6: unique local addresses fc00::/7 and IPv4-mapped ::ffff:a.b.c.d.
+    if ((bytes[0] & 0xfe) == 0xfc) return true;
+    final isV4Mapped = bytes.take(10).every((b) => b == 0) &&
+        bytes[10] == 0xff &&
+        bytes[11] == 0xff;
+    if (isV4Mapped) {
+      return _isBlockedAddress(
+          InternetAddress.fromRawAddress(bytes.sublist(12)));
+    }
+    return false;
+  }
+
+  /// Whether [raw] is a safe HTTPS SearXNG base URL.
+  ///
+  /// IP literals are checked directly; arbitrary hostnames are resolved first
+  /// and every resolved address is re-checked, so a name like `foo.nip.io` (or
+  /// any DNS-rebinding host) that points at loopback or a metadata IP is
+  /// rejected instead of silently bypassing the guard.
+  static Future<bool> isAllowedSearxngUrl(String raw) async {
     final uri = Uri.tryParse(raw.trim());
     if (uri == null) return false;
     if (uri.scheme != 'https') return false;
     final host = uri.host.toLowerCase();
     if (host.isEmpty) return false;
-    if (host == 'localhost' || host == '::1' || host == '0.0.0.0') return false;
-    final ipv4 = RegExp(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$');
-    if (ipv4.hasMatch(host)) {
-      final parts = host.split('.').map(int.parse).toList();
-      if (parts.any((p) => p < 0 || p > 255)) return false;
-      // RFC1918 + loopback + link-local + CGNAT + multicast + 0/8 + broadcast
-      if (parts[0] == 10) return false;
-      if (parts[0] == 127) return false;
-      if (parts[0] == 0) return false;
-      if (parts[0] == 169 && parts[1] == 254) return false;
-      if (parts[0] == 192 && parts[1] == 168) return false;
-      if (parts[0] == 172 && parts[1] >= 16 && parts[1] <= 31) return false;
-      if (parts[0] == 100 && parts[1] >= 64 && parts[1] <= 127) return false;
-      if (parts[0] >= 224) return false;
-      if (parts[0] == 255 && parts[1] == 255) return false;
-    }
-    // IPv6 literals (Uri.host strips brackets): block loopback/link-local/ULA/private
-    if (host.contains(':')) {
-      final h = host.toLowerCase();
-      if (h == '::1' || h == '::' ) return false;
-      if (h.startsWith('fe80:') || h.startsWith('fec0:') || h.startsWith('fc00:') || h.startsWith('fd00:')) return false;
-      if (h.startsWith('::ffff:')) return false;
-    }
-    // Metadata / cloud endpoints and onion
-    if (host == '169.254.169.254' || host.endsWith('.169.254.169.254')) return false;
-    if (host == 'metadata.google.internal' || host.endsWith('.metadata.google.internal')) return false;
+    if (host == 'localhost' || host.endsWith('.localhost')) return false;
     if (host.endsWith('.onion') || host.endsWith('.local')) return false;
+    if (host == 'metadata.google.internal' ||
+        host.endsWith('.metadata.google.internal')) {
+      return false;
+    }
+
+    final literal = InternetAddress.tryParse(host);
+    if (literal != null) return !_isBlockedAddress(literal);
+
+    try {
+      final addresses = await InternetAddress.lookup(host);
+      if (addresses.isEmpty) return false;
+      for (final addr in addresses) {
+        if (_isBlockedAddress(addr)) return false;
+      }
+    } on SocketException {
+      return false;
+    }
     return true;
   }
 
   @override
   Future<List<SearchResult>> search(String query, {int maxResults = 5}) async {
     if (query.trim().isEmpty) return [];
-    if (!isAllowedSearxngUrl(baseUrl)) {
+    if (!await isAllowedSearxngUrl(baseUrl)) {
       print('SearXNG blocked: disallowed baseUrl $baseUrl');
       return [];
     }

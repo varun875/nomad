@@ -19,6 +19,8 @@ class TtsService {
   bool _muted = false;
   Completer<void>? _currentCompleter;
   Completer<void>? _initReady;
+  int _generation = 0;
+  bool _isReady = false;
 
   bool get isSpeaking => _isSpeaking;
 
@@ -40,7 +42,7 @@ class TtsService {
       await _tts.setPitch(1.05);
 
       await _tts.awaitSpeakCompletion(true);
-      
+
       _tts.setCompletionHandler(() {
         Log.d('TTS', 'Speech completed');
         _isSpeaking = false;
@@ -67,6 +69,7 @@ class TtsService {
         _remuteMusicIfNeeded();
         _processQueue();
       });
+      _isReady = true;
       Log.d('TTS', 'Initialization complete');
     } catch (e) {
       Log.e('TTS', 'Init error', e);
@@ -101,8 +104,19 @@ class TtsService {
       // A handful of voices widely regarded as warm and natural; used only as a
       // tie-breaker on top of the quality heuristics below.
       const preferredNames = [
-        'samantha', 'ava', 'zoe', 'serena', 'aria', 'jenny', 'libby',
-        'sonia', 'evie', 'tessa', 'moira', 'karen', 'nora',
+        'samantha',
+        'ava',
+        'zoe',
+        'serena',
+        'aria',
+        'jenny',
+        'libby',
+        'sonia',
+        'evie',
+        'tessa',
+        'moira',
+        'karen',
+        'nora',
       ];
 
       int scoreOf(Map<String, dynamic> v) {
@@ -153,9 +167,10 @@ class TtsService {
         'locale': (best['locale'] ?? 'en-US').toString(),
       };
       await _tts.setVoice(voiceArg);
-        Log.d('TTS', 'Selected voice: ${voiceArg['name']} (${voiceArg['locale']})');
+      Log.d(
+          'TTS', 'Selected voice: ${voiceArg['name']} (${voiceArg['locale']})');
     } catch (e) {
-        Log.d('TTS', 'voice selection failed: $e');
+      Log.d('TTS', 'voice selection failed: $e');
     }
   }
 
@@ -169,14 +184,17 @@ class TtsService {
   Future<void> speak(String text) async {
     if (_muted || text.isEmpty) return;
     await ready;
+    // Initialization failures are logged in _init; don't call into a partially
+    // configured platform engine or leave a queued task waiting for callbacks.
+    if (_muted || !_isReady) return;
 
     final completer = Completer<void>();
     _queue.add(_TtsTask(text, completer));
-    
+
     if (!_isSpeaking) {
       _processQueue();
     }
-    
+
     return completer.future;
   }
 
@@ -191,17 +209,32 @@ class TtsService {
     _isSpeaking = true;
     final task = _queue.removeFirst();
     _currentCompleter = task.completer;
-    
+    final generation = _generation;
+
     try {
       // Ensure music is unmuted so user can hear TTS
       await _unmuteMusic();
-      
+
+      // stop() may have run while Android's audio channel was being prepared.
+      // Do not let that stale task start after cancellation.
+      if (generation != _generation || _muted) {
+        if (!task.completer.isCompleted) task.completer.complete();
+        if (identical(_currentCompleter, task.completer)) {
+          _currentCompleter = null;
+          _isSpeaking = false;
+        }
+        return;
+      }
+
       Log.d('TTS', 'Speaking: ${task.text}');
       await _tts.speak(task.text);
     } catch (e) {
-      _isSpeaking = false;
-      task.completer.complete();
-      _processQueue();
+      if (!task.completer.isCompleted) task.completer.complete();
+      if (identical(_currentCompleter, task.completer)) {
+        _isSpeaking = false;
+        _currentCompleter = null;
+        _processQueue();
+      }
     }
   }
 
@@ -245,11 +278,16 @@ class TtsService {
   }
 
   Future<void> stop() async {
+    ++_generation;
+    for (final task in _queue) {
+      if (!task.completer.isCompleted) task.completer.complete();
+    }
     _queue.clear();
-    _isSpeaking = false;
-    await _tts.stop();
-    _currentCompleter?.complete();
+    final current = _currentCompleter;
     _currentCompleter = null;
+    _isSpeaking = false;
+    if (current != null && !current.isCompleted) current.complete();
+    await _tts.stop();
   }
 }
 

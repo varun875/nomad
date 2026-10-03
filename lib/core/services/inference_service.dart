@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:llamadart/llamadart.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'device_info_service.dart';
 import 'model_service.dart';
@@ -355,9 +354,8 @@ class InferenceService {
   Future<void> warmUp(String modelId) async {
     // Loads the last-used model in the background so it's ready.
     try {
-      final directory = await getApplicationDocumentsDirectory();
-      final modelPath =
-          '${directory.path}/models/${modelId.replaceAll('/', '_')}.gguf';
+      final directory = await ModelService.getModelDirectory();
+      final modelPath = '${directory.path}/${modelId.replaceAll('/', '_')}.gguf';
       if (await File(modelPath).exists()) {
         await loadModel(modelPath);
       }

@@ -1,11 +1,9 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:background_downloader/background_downloader.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import '../models/hf_model.dart';
 import '../models/download_status.dart';
@@ -112,9 +110,8 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
       final task = await FileDownloader().taskForId(model.id);
       if (task != null) continue; // Still alive; resumeFromBackground handles it.
 
-      final directory = await getApplicationDocumentsDirectory();
-      final modelPath =
-          '${directory.path}/models/${model.id.replaceAll('/', '_')}.gguf';
+      final modelsDir = await ModelService.getModelDirectory();
+      final modelPath = '${modelsDir.path}/${model.id.replaceAll('/', '_')}.gguf';
       if (await File(modelPath).exists()) {
         // _markAsCompleted re-verifies the file size and deletes it if bogus.
         _markAsCompleted(model.id);
@@ -135,8 +132,11 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     print('Starting download for ${model.id}: $url');
 
     // Ensure models directory exists
-    final directory = await getApplicationDocumentsDirectory();
-    final modelsDir = Directory('${directory.path}/models');
+    // Desktop Nomad Code runs as a separate process, so desktop model files
+    // live in a predictable user-visible folder shared with that server.
+    // Mobile keeps using the private app documents directory.
+    final sharedDesktopModels = Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+    final modelsDir = await ModelService.getModelDirectory();
     if (!await modelsDir.exists()) {
       await modelsDir.create(recursive: true);
     }
@@ -149,7 +149,7 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     final task = DownloadTask(
       url: url,
       filename: filename,
-      directory: 'models',
+      directory: sharedDesktopModels ? 'Nomad/models' : 'models',
       baseDirectory: BaseDirectory.applicationDocuments,
       updates: Updates.statusAndProgress,
       retries: 3,
@@ -237,29 +237,16 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     }).toList();
   }
 
-  Future<String?> _fetchHfSha256(String modelId) async {
+  /// Returns the pinned SHA-256 for [modelId], or null if none is pinned.
+  ///
+  /// Checksums are intentionally never fetched from the network: the file and
+  /// its expected hash would otherwise come from the same host, so a tampered
+  /// mirror (or MITM) could satisfy its own verification. Only values pinned
+  /// in [ModelService] are trusted.
+  String? _pinnedSha256(String modelId) {
     final pinned = ModelService.pinnedSha256For(modelId);
-    if (pinned != null && pinned.isNotEmpty) return pinned.toLowerCase();
-    final repo = ModelService.repoFor(modelId);
-    final filename = ModelService.filenameFor(modelId);
-    if (repo.isEmpty || filename.isEmpty) return null;
-    try {
-      final uri = Uri.https('huggingface.co', '/api/models/$repo');
-      final resp = await http
-          .get(uri, headers: {'Accept': 'application/json'}).timeout(
-              const Duration(seconds: 10));
-      if (resp.statusCode != 200) return null;
-      final data = jsonDecode(resp.body) as Map<String, dynamic>;
-      final siblings = (data['siblings'] as List?) ?? const [];
-      for (final s in siblings) {
-        final m = s as Map<String, dynamic>;
-        if ((m['rfilename'] as String?) == filename) {
-          final sha = (m['sha256'] as String?) ?? (m['oid'] as String?);
-          if (sha != null && sha.length >= 32) return sha.toLowerCase();
-        }
-      }
-    } catch (_) {}
-    return null;
+    if (pinned == null || pinned.isEmpty) return null;
+    return pinned.toLowerCase();
   }
 
   Future<String> _sha256OfFile(File file) async {
@@ -267,13 +254,42 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     return digest.toString();
   }
 
+  /// Verifies a downloaded mmproj file against its pinned SHA-256, deleting the
+  /// file on mismatch so a tampered projector is never loaded by the backend.
+  Future<void> _verifyMmproj(String modelId) async {
+    final expected = ModelService.pinnedMmprojSha256For(modelId);
+    if (expected == null || expected.isEmpty) return;
+    final modelsDir = await ModelService.getModelDirectory();
+    final file =
+        File('${modelsDir.path}/${modelId.replaceAll('/', '_')}.mmproj');
+    if (!await file.exists()) return;
+    try {
+      final actual = await _sha256OfFile(file);
+      if (actual.toLowerCase() != expected.toLowerCase()) {
+        print('ERROR: mmproj SHA256 mismatch for $modelId');
+        try {
+          await file.delete();
+        } catch (_) {}
+        return;
+      }
+      print('mmproj SHA256 verified for $modelId');
+    } catch (e) {
+      print('WARN: mmproj SHA256 check failed for $modelId: $e (keeping file)');
+    }
+  }
+
   Future<void> _markAsCompleted(String id) async {
+    // The multimodal projector shares this completion pipeline but has no
+    // state entry of its own, so verify it here against its pinned hash.
+    if (id.endsWith('_mmproj')) {
+      await _verifyMmproj(id.substring(0, id.length - '_mmproj'.length));
+      return;
+    }
     final matches = state.where((m) => m.id == id);
     if (matches.isEmpty) return;
     final model = matches.first;
-    final directory = await getApplicationDocumentsDirectory();
-    final modelPath =
-        '${directory.path}/models/${id.replaceAll('/', '_')}.gguf';
+    final modelsDir = await ModelService.getModelDirectory();
+    final modelPath = '${modelsDir.path}/${id.replaceAll('/', '_')}.gguf';
 
     // Verify file exists
     final file = File(modelPath);
@@ -306,7 +322,7 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
       return;
     }
 
-    final expectedSha = await _fetchHfSha256(id);
+    final expectedSha = _pinnedSha256(id);
     if (expectedSha != null && expectedSha.isNotEmpty) {
       try {
         final actualSha = await _sha256OfFile(file);
@@ -349,10 +365,11 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     // Download multimodal projector (mmproj) for vision models
     final mmprojUrl = ModelService.getMmprojUrl(id);
     if (mmprojUrl != null) {
+      final sharedDesktopModels = Platform.isWindows || Platform.isLinux || Platform.isMacOS;
       final mmprojTask = DownloadTask(
         url: mmprojUrl,
         filename: '${id.replaceAll('/', '_')}.mmproj',
-        directory: 'models',
+        directory: sharedDesktopModels ? 'Nomad/models' : 'models',
         baseDirectory: BaseDirectory.applicationDocuments,
         retries: 3,
         allowPause: true,
@@ -474,8 +491,8 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     }).toList();
     
     // Clean up any partial file
-    final directory = await getApplicationDocumentsDirectory();
-    final partialFile = File('${directory.path}/models/${id.replaceAll('/', '_')}.gguf');
+    final modelsDir = await ModelService.getModelDirectory();
+    final partialFile = File('${modelsDir.path}/${id.replaceAll('/', '_')}.gguf');
     if (await partialFile.exists()) {
       await partialFile.delete();
     }

@@ -275,6 +275,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
     String sentenceBuffer = "";
     bool hasStartedSpeaking = false;
+    final markupState = _StreamingMarkupState();
 
     // Throttle UI updates to ~20fps. Pushing the entire growing buffer to the
     // widget tree on every token starves the frame pipeline on low-end
@@ -293,14 +294,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         lastUiFlushMs = nowMs;
       }
       sentenceBuffer += token;
+      markupState.add(token);
 
       if (_shouldSpeakResponse && !_isCreationMode) {
-        final fullText = buffer.toString();
-        final inCodeBlock = '```'.allMatches(fullText).length % 2 != 0;
-        final inThinkBlock = '<think>'.allMatches(fullText).length !=
-            '</think>'.allMatches(fullText).length;
-
-        if (!inCodeBlock && !inThinkBlock) {
+        if (!markupState.isHidden) {
           final match =
               RegExp(r'([.!?]+(?=\s))|\n+').firstMatch(sentenceBuffer);
           final commaMatch = sentenceBuffer.length > 50
@@ -403,16 +400,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       final visionCapable = modelForVision != null &&
           modelForVision.localPath != null &&
           ModelService.getMmprojUrl(modelForVision.id) != null &&
-          await File(modelForVision.localPath!
-                  .replaceAll('.gguf', '.mmproj'))
+          await File(modelForVision.localPath!.replaceAll('.gguf', '.mmproj'))
               .exists();
       if (!visionCapable) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content:
-                  Text(AppLocalizations.of(context)!
-                      .modelDoesNotSupportImageInput),
+              content: Text(
+                  AppLocalizations.of(context)!.modelDoesNotSupportImageInput),
             ),
           );
         }
@@ -584,7 +579,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       HapticFeedback.selectionClick();
 
       // Persist even when stopped - user watched the partial reply, don't discard it.
-      final displayText = _shouldStop ? '$accumulated\n\n*(stopped)*' : accumulated;
+      final displayText =
+          _shouldStop ? '$accumulated\n\n*(stopped)*' : accumulated;
       ref.read(chatMessagesProvider.notifier).addMessage(
             ChatMessage(
               text: displayText,
@@ -1296,322 +1292,339 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           ValueListenableBuilder<double>(
                             valueListenable: _soundLevel,
                             builder: (context, level, _) => LayoutBuilder(
-                            builder: (context, constraints) {
-                              final rawLevel = level.clamp(-50.0, 50.0);
-                              final normalizedLevel = math
-                                  .max(0.0, (rawLevel + 30.0) / 50.0)
-                                  .clamp(0.0, 1.0);
+                              builder: (context, constraints) {
+                                final rawLevel = level.clamp(-50.0, 50.0);
+                                final normalizedLevel = math
+                                    .max(0.0, (rawLevel + 30.0) / 50.0)
+                                    .clamp(0.0, 1.0);
 
-                              final liveMaxWidth = constraints.maxWidth - 88.0;
-                              final audioWidth = _isLiveMuted
-                                  ? 44.0
-                                  : 44.0 +
-                                      (normalizedLevel * (liveMaxWidth - 44.0));
+                                final liveMaxWidth =
+                                    constraints.maxWidth - 88.0;
+                                final audioWidth = _isLiveMuted
+                                    ? 44.0
+                                    : 44.0 +
+                                        (normalizedLevel *
+                                            (liveMaxWidth - 44.0));
 
-                              return AnimatedBuilder(
-                                animation: _modeT,
-                                builder: (context, _) {
-                                  final mt = _modeT.value;
-                                  // The chat<->live morph is driven by _modeT;
-                                  // the audio-reactive width is smoothed quickly
-                                  // so the pill stays snappy while listening.
-                                  return TweenAnimationBuilder<double>(
-                                    duration: const Duration(milliseconds: 120),
-                                    curve: Curves.easeOut,
-                                    tween: Tween<double>(
-                                        begin: audioWidth, end: audioWidth),
-                                    builder: (context, smoothAudio, __) {
-                                      final currentWidth = constraints
-                                              .maxWidth +
-                                          (smoothAudio - constraints.maxWidth) *
-                                              mt;
-                                      final btnT =
-                                          ((mt - 0.35) / 0.65).clamp(0.0, 1.0);
+                                return AnimatedBuilder(
+                                  animation: _modeT,
+                                  builder: (context, _) {
+                                    final mt = _modeT.value;
+                                    // The chat<->live morph is driven by _modeT;
+                                    // the audio-reactive width is smoothed quickly
+                                    // so the pill stays snappy while listening.
+                                    return TweenAnimationBuilder<double>(
+                                      duration:
+                                          const Duration(milliseconds: 120),
+                                      curve: Curves.easeOut,
+                                      tween: Tween<double>(
+                                          begin: audioWidth, end: audioWidth),
+                                      builder: (context, smoothAudio, __) {
+                                        final currentWidth =
+                                            constraints.maxWidth +
+                                                (smoothAudio -
+                                                        constraints.maxWidth) *
+                                                    mt;
+                                        final btnT = ((mt - 0.35) / 0.65)
+                                            .clamp(0.0, 1.0);
 
-                                      final circleLeft = (constraints.maxWidth -
-                                              currentWidth) /
-                                          2;
+                                        final circleLeft =
+                                            (constraints.maxWidth -
+                                                    currentWidth) /
+                                                2;
 
-                                      return SizedBox(
-                                        width: constraints.maxWidth,
-                                        child: Stack(
-                                          alignment: Alignment.center,
-                                          clipBehavior: Clip.none,
-                                          children: [
-                                            SizedBox(
-                                              width: currentWidth,
-                                              child: AnimatedContainer(
-                                                duration: const Duration(
-                                                    milliseconds: 460),
-                                                curve: Curves.easeOutCubic,
-                                                height:
-                                                    _isLiveMode ? 44.0 : null,
-                                                constraints: _isLiveMode
-                                                    ? null
-                                                    : const BoxConstraints(
-                                                        minHeight: 44,
-                                                        maxHeight: 140),
-                                                decoration: _isLiveMode
-                                                    ? BoxDecoration(
-                                                        borderRadius:
-                                                            BorderRadius
-                                                                .circular(100),
-                                                        gradient:
-                                                            const LinearGradient(
-                                                          begin: Alignment
-                                                              .topCenter,
-                                                          end: Alignment
-                                                              .bottomCenter,
-                                                          colors: [
-                                                            Colors.white,
-                                                            Color(0xFF86A8E7)
+                                        return SizedBox(
+                                          width: constraints.maxWidth,
+                                          child: Stack(
+                                            alignment: Alignment.center,
+                                            clipBehavior: Clip.none,
+                                            children: [
+                                              SizedBox(
+                                                width: currentWidth,
+                                                child: AnimatedContainer(
+                                                  duration: const Duration(
+                                                      milliseconds: 460),
+                                                  curve: Curves.easeOutCubic,
+                                                  height:
+                                                      _isLiveMode ? 44.0 : null,
+                                                  constraints: _isLiveMode
+                                                      ? null
+                                                      : const BoxConstraints(
+                                                          minHeight: 44,
+                                                          maxHeight: 140),
+                                                  decoration: _isLiveMode
+                                                      ? BoxDecoration(
+                                                          borderRadius:
+                                                              BorderRadius
+                                                                  .circular(
+                                                                      100),
+                                                          gradient:
+                                                              const LinearGradient(
+                                                            begin: Alignment
+                                                                .topCenter,
+                                                            end: Alignment
+                                                                .bottomCenter,
+                                                            colors: [
+                                                              Colors.white,
+                                                              Color(0xFF86A8E7)
+                                                            ],
+                                                          ),
+                                                        )
+                                                      : BoxDecoration(
+                                                          color: nomad.surface
+                                                              .withValues(
+                                                                  alpha: 0.92),
+                                                          borderRadius:
+                                                              BorderRadius
+                                                                  .circular(
+                                                                      100),
+                                                          border: Border.all(
+                                                              color:
+                                                                  nomad.border,
+                                                              width: 1),
+                                                        ),
+                                                  clipBehavior: Clip.antiAlias,
+                                                  child: AnimatedBuilder(
+                                                    animation: _modeController,
+                                                    builder: (context, child) {
+                                                      final v =
+                                                          _modeController.value;
+                                                      final cv = (1.0 - v / 0.5)
+                                                          .clamp(0.0, 1.0);
+                                                      return Opacity(
+                                                        opacity: Curves.easeOut
+                                                            .transform(cv),
+                                                        child: Transform.scale(
+                                                          scale:
+                                                              0.95 + 0.05 * cv,
+                                                          alignment: Alignment
+                                                              .centerLeft,
+                                                          child: child,
+                                                        ),
+                                                      );
+                                                    },
+                                                    child: IgnorePointer(
+                                                      ignoring: _isLiveMode,
+                                                      child: Padding(
+                                                        padding:
+                                                            const EdgeInsets
+                                                                .only(
+                                                                left: 6,
+                                                                right: 6,
+                                                                top: 6,
+                                                                bottom: 6),
+                                                        child: Row(
+                                                          crossAxisAlignment:
+                                                              CrossAxisAlignment
+                                                                  .center,
+                                                          children: [
+                                                            _ComposerAddButton(
+                                                              isOpen: _isAddMenuOpen ||
+                                                                  _isCreationMode,
+                                                              onTap: _isCreationMode
+                                                                  ? _exitCreationMode
+                                                                  : _toggleAddMenu,
+                                                            ),
+                                                            const SizedBox(
+                                                                width: 10),
+                                                            Expanded(
+                                                              child: Theme(
+                                                                data: Theme.of(
+                                                                        context)
+                                                                    .copyWith(
+                                                                  inputDecorationTheme:
+                                                                      const InputDecorationTheme(
+                                                                    border:
+                                                                        InputBorder
+                                                                            .none,
+                                                                    enabledBorder:
+                                                                        InputBorder
+                                                                            .none,
+                                                                    focusedBorder:
+                                                                        InputBorder
+                                                                            .none,
+                                                                  ),
+                                                                ),
+                                                                child:
+                                                                    TextField(
+                                                                  controller:
+                                                                      _controller,
+                                                                  focusNode:
+                                                                      _focusNode,
+                                                                  minLines: 1,
+                                                                  maxLines: 4,
+                                                                  keyboardType:
+                                                                      TextInputType
+                                                                          .multiline,
+                                                                  textInputAction:
+                                                                      TextInputAction
+                                                                          .newline,
+                                                                  style: textTheme
+                                                                      .bodyMedium,
+                                                                  decoration:
+                                                                      InputDecoration(
+                                                                    hintText: _isCreationMode
+                                                                        ? 'Describe your creation…'
+                                                                        : 'Ask anything',
+                                                                    hintStyle: textTheme
+                                                                        .bodyMedium
+                                                                        ?.copyWith(
+                                                                            color:
+                                                                                nomad.textSecondary),
+                                                                    filled:
+                                                                        false,
+                                                                    fillColor:
+                                                                        Colors
+                                                                            .transparent,
+                                                                    border:
+                                                                        InputBorder
+                                                                            .none,
+                                                                    enabledBorder:
+                                                                        InputBorder
+                                                                            .none,
+                                                                    focusedBorder:
+                                                                        InputBorder
+                                                                            .none,
+                                                                    errorBorder:
+                                                                        InputBorder
+                                                                            .none,
+                                                                    disabledBorder:
+                                                                        InputBorder
+                                                                            .none,
+                                                                    contentPadding: const EdgeInsets
+                                                                        .symmetric(
+                                                                        vertical:
+                                                                            10),
+                                                                    isDense:
+                                                                        true,
+                                                                    counterText:
+                                                                        '',
+                                                                  ),
+                                                                  onSubmitted:
+                                                                      (_) =>
+                                                                          _sendMessage(),
+                                                                ),
+                                                              ),
+                                                            ),
+                                                            if (_searchEnabled &&
+                                                                !_isCreationMode)
+                                                              _ComposerIconButton(
+                                                                tooltip:
+                                                                    'Web search on',
+                                                                icon: Icons
+                                                                    .language_rounded,
+                                                                isActive: true,
+                                                                onTap: () {
+                                                                  HapticFeedback
+                                                                      .lightImpact();
+                                                                  setState(() =>
+                                                                      _searchEnabled =
+                                                                          false);
+                                                                },
+                                                              ),
+                                                            if (_searchEnabled &&
+                                                                !_isCreationMode)
+                                                              const SizedBox(
+                                                                  width: 6),
+                                                            if (!_isCreationMode)
+                                                              _ComposerIconButton(
+                                                                tooltip:
+                                                                    'Nomad Voice',
+                                                                svgAsset:
+                                                                    'assets/images/mic.svg',
+                                                                onTap: () {
+                                                                  HapticFeedback
+                                                                      .mediumImpact();
+                                                                  _toggleLiveMode();
+                                                                },
+                                                              ),
+                                                            if (!_isCreationMode)
+                                                              const SizedBox(
+                                                                  width: 6),
+                                                            NomadSendButton(
+                                                              onTap:
+                                                                  _sendMessage,
+                                                              onStop:
+                                                                  _stopGeneration,
+                                                              isEnabled: _hasText ||
+                                                                  _attachedImages
+                                                                      .isNotEmpty,
+                                                              isStreaming:
+                                                                  _isStreaming,
+                                                            ),
                                                           ],
                                                         ),
-                                                      )
-                                                    : BoxDecoration(
-                                                        color: nomad.surface
-                                                            .withValues(
-                                                                alpha: 0.92),
-                                                        borderRadius:
-                                                            BorderRadius
-                                                                .circular(100),
-                                                        border: Border.all(
-                                                            color: nomad.border,
-                                                            width: 1),
-                                                      ),
-                                                clipBehavior: Clip.antiAlias,
-                                                child: AnimatedBuilder(
-                                                  animation: _modeController,
-                                                  builder: (context, child) {
-                                                    final v =
-                                                        _modeController.value;
-                                                    final cv = (1.0 - v / 0.5)
-                                                        .clamp(0.0, 1.0);
-                                                    return Opacity(
-                                                      opacity: Curves.easeOut
-                                                          .transform(cv),
-                                                      child: Transform.scale(
-                                                        scale: 0.95 + 0.05 * cv,
-                                                        alignment: Alignment
-                                                            .centerLeft,
-                                                        child: child,
-                                                      ),
-                                                    );
-                                                  },
-                                                  child: IgnorePointer(
-                                                    ignoring: _isLiveMode,
-                                                    child: Padding(
-                                                      padding:
-                                                          const EdgeInsets.only(
-                                                              left: 6,
-                                                              right: 6,
-                                                              top: 6,
-                                                              bottom: 6),
-                                                      child: Row(
-                                                        crossAxisAlignment:
-                                                            CrossAxisAlignment
-                                                                .center,
-                                                        children: [
-                                                          _ComposerAddButton(
-                                                            isOpen: _isAddMenuOpen ||
-                                                                _isCreationMode,
-                                                            onTap: _isCreationMode
-                                                                ? _exitCreationMode
-                                                                : _toggleAddMenu,
-                                                          ),
-                                                          const SizedBox(
-                                                              width: 10),
-                                                          Expanded(
-                                                            child: Theme(
-                                                              data: Theme.of(
-                                                                      context)
-                                                                  .copyWith(
-                                                                inputDecorationTheme:
-                                                                    const InputDecorationTheme(
-                                                                  border:
-                                                                      InputBorder
-                                                                          .none,
-                                                                  enabledBorder:
-                                                                      InputBorder
-                                                                          .none,
-                                                                  focusedBorder:
-                                                                      InputBorder
-                                                                          .none,
-                                                                ),
-                                                              ),
-                                                              child: TextField(
-                                                                controller:
-                                                                    _controller,
-                                                                focusNode:
-                                                                    _focusNode,
-                                                                minLines: 1,
-                                                                maxLines: 4,
-                                                                keyboardType:
-                                                                    TextInputType
-                                                                        .multiline,
-                                                                textInputAction:
-                                                                    TextInputAction
-                                                                        .newline,
-                                                                style: textTheme
-                                                                    .bodyMedium,
-                                                                decoration:
-                                                                    InputDecoration(
-                                                                  hintText: _isCreationMode
-                                                                      ? 'Describe your creation…'
-                                                                      : 'Ask anything',
-                                                                  hintStyle: textTheme
-                                                                      .bodyMedium
-                                                                      ?.copyWith(
-                                                                          color:
-                                                                              nomad.textSecondary),
-                                                                  filled: false,
-                                                                  fillColor: Colors
-                                                                      .transparent,
-                                                                  border:
-                                                                      InputBorder
-                                                                          .none,
-                                                                  enabledBorder:
-                                                                      InputBorder
-                                                                          .none,
-                                                                  focusedBorder:
-                                                                      InputBorder
-                                                                          .none,
-                                                                  errorBorder:
-                                                                      InputBorder
-                                                                          .none,
-                                                                  disabledBorder:
-                                                                      InputBorder
-                                                                          .none,
-                                                                  contentPadding:
-                                                                      const EdgeInsets
-                                                                          .symmetric(
-                                                                          vertical:
-                                                                              10),
-                                                                  isDense: true,
-                                                                  counterText:
-                                                                      '',
-                                                                ),
-                                                                onSubmitted: (_) =>
-                                                                    _sendMessage(),
-                                                              ),
-                                                            ),
-                                                          ),
-                                                          if (_searchEnabled &&
-                                                              !_isCreationMode)
-                                                            _ComposerIconButton(
-                                                              tooltip:
-                                                                  'Web search on',
-                                                              icon: Icons
-                                                                  .language_rounded,
-                                                              isActive: true,
-                                                              onTap: () {
-                                                                HapticFeedback
-                                                                    .lightImpact();
-                                                                setState(() =>
-                                                                    _searchEnabled =
-                                                                        false);
-                                                              },
-                                                            ),
-                                                          if (_searchEnabled &&
-                                                              !_isCreationMode)
-                                                            const SizedBox(
-                                                                width: 6),
-                                                          if (!_isCreationMode)
-                                                            _ComposerIconButton(
-                                                              tooltip:
-                                                                  'Nomad Voice',
-                                                              svgAsset:
-                                                                  'assets/images/mic.svg',
-                                                              onTap: () {
-                                                                HapticFeedback
-                                                                    .mediumImpact();
-                                                                _toggleLiveMode();
-                                                              },
-                                                            ),
-                                                          if (!_isCreationMode)
-                                                            const SizedBox(
-                                                                width: 6),
-                                                          NomadSendButton(
-                                                            onTap: _sendMessage,
-                                                            onStop:
-                                                                _stopGeneration,
-                                                            isEnabled: _hasText ||
-                                                                _attachedImages
-                                                                    .isNotEmpty,
-                                                            isStreaming:
-                                                                _isStreaming,
-                                                          ),
-                                                        ],
                                                       ),
                                                     ),
                                                   ),
                                                 ),
                                               ),
-                                            ),
-                                            Positioned(
-                                              left: circleLeft - 44,
-                                              top: 0,
-                                              bottom: 0,
-                                              child: IgnorePointer(
-                                                ignoring: !_isLiveMode,
-                                                child: Opacity(
-                                                  opacity: btnT,
-                                                  child: Transform.scale(
-                                                    scale: 0.7 + 0.3 * btnT,
-                                                    child: SizedBox(
-                                                      width: 34,
-                                                      child: Center(
-                                                        child:
-                                                            _ComposerIconButton(
-                                                          tooltip: _isLiveMuted
-                                                              ? 'Unmute'
-                                                              : 'Mute',
-                                                          svgAsset:
-                                                              'assets/images/mic.svg',
-                                                          isActive:
-                                                              _isLiveMuted,
-                                                          onTap:
-                                                              _toggleLiveMute,
+                                              Positioned(
+                                                left: circleLeft - 44,
+                                                top: 0,
+                                                bottom: 0,
+                                                child: IgnorePointer(
+                                                  ignoring: !_isLiveMode,
+                                                  child: Opacity(
+                                                    opacity: btnT,
+                                                    child: Transform.scale(
+                                                      scale: 0.7 + 0.3 * btnT,
+                                                      child: SizedBox(
+                                                        width: 34,
+                                                        child: Center(
+                                                          child:
+                                                              _ComposerIconButton(
+                                                            tooltip:
+                                                                _isLiveMuted
+                                                                    ? 'Unmute'
+                                                                    : 'Mute',
+                                                            svgAsset:
+                                                                'assets/images/mic.svg',
+                                                            isActive:
+                                                                _isLiveMuted,
+                                                            onTap:
+                                                                _toggleLiveMute,
+                                                          ),
                                                         ),
                                                       ),
                                                     ),
                                                   ),
                                                 ),
                                               ),
-                                            ),
-                                            Positioned(
-                                              right: circleLeft - 40,
-                                              top: 0,
-                                              bottom: 0,
-                                              child: IgnorePointer(
-                                                ignoring: !_isLiveMode,
-                                                child: Opacity(
-                                                  opacity: btnT,
-                                                  child: Transform.scale(
-                                                    scale: 0.7 + 0.3 * btnT,
-                                                    child: SizedBox(
-                                                      width: 34,
-                                                      child: Center(
-                                                        child:
-                                                            _ComposerAddButton(
-                                                          isOpen: true,
-                                                          onTap: _exitLiveMode,
+                                              Positioned(
+                                                right: circleLeft - 40,
+                                                top: 0,
+                                                bottom: 0,
+                                                child: IgnorePointer(
+                                                  ignoring: !_isLiveMode,
+                                                  child: Opacity(
+                                                    opacity: btnT,
+                                                    child: Transform.scale(
+                                                      scale: 0.7 + 0.3 * btnT,
+                                                      child: SizedBox(
+                                                        width: 34,
+                                                        child: Center(
+                                                          child:
+                                                              _ComposerAddButton(
+                                                            isOpen: true,
+                                                            onTap:
+                                                                _exitLiveMode,
+                                                          ),
                                                         ),
                                                       ),
                                                     ),
                                                   ),
                                                 ),
                                               ),
-                                            ),
-                                          ],
-                                        ),
-                                      );
-                                    },
-                                  );
-                                },
-                              );
-                            },
-                          ),
+                                            ],
+                                          ),
+                                        );
+                                      },
+                                    );
+                                  },
+                                );
+                              },
+                            ),
                           ),
                         ],
                       ),
@@ -1715,7 +1728,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   final modelName = selectedModel?.name ?? '';
 
                   String suffix = '';
-                  if (modelName.toLowerCase().contains('lite')) {
+                  if (modelName.toLowerCase().contains('nano')) {
+                    suffix = ' Nano';
+                  } else if (modelName.toLowerCase().contains('lite')) {
                     suffix = ' Lite';
                   } else if (modelName.toLowerCase().contains('creative')) {
                     suffix = ' Creative';
@@ -1723,6 +1738,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     suffix = ' Steady';
                   } else if (modelName.toLowerCase().contains('smart')) {
                     suffix = ' Smart';
+                  } else if (modelName.toLowerCase().contains('pro')) {
+                    suffix = ' Pro';
                   }
 
                   final hasMultiple = downloadedModels.length > 1;
@@ -2263,6 +2280,47 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 }
 
+/// Tracks markdown code fences and model think tags as tokens arrive, avoiding
+/// rescanning the full response for every generated token.
+class _StreamingMarkupState {
+  static const _markers = ['```', '<think>', '</think>'];
+  static const _maxMarkerLength = 8;
+
+  String _pending = '';
+  bool _inCodeBlock = false;
+  int _thinkDepth = 0;
+
+  bool get isHidden => _inCodeBlock || _thinkDepth > 0;
+
+  void add(String token) {
+    _pending += token;
+    var offset = 0;
+
+    // Keep a short suffix so delimiters split across tokenizer chunks are
+    // matched on the next call.
+    final safeEnd = _pending.length - (_maxMarkerLength - 1);
+    while (offset < safeEnd) {
+      final marker = _markers.firstWhere(
+        (candidate) => _pending.startsWith(candidate, offset),
+        orElse: () => '',
+      );
+      if (marker.isEmpty) {
+        offset++;
+      } else {
+        if (marker == '```') {
+          _inCodeBlock = !_inCodeBlock;
+        } else if (marker == '<think>') {
+          _thinkDepth++;
+        } else if (_thinkDepth > 0) {
+          _thinkDepth--;
+        }
+        offset += marker.length;
+      }
+    }
+    _pending = _pending.substring(offset);
+  }
+}
+
 /// ShaderMask creates an offscreen layer while the conversation scrolls.
 /// Keep the Figma edge fade on capable devices and skip that layer on phones
 /// where it competes with inference for frame time.
@@ -2529,7 +2587,8 @@ class _AddMenuPanelState extends State<_AddMenuPanel>
                       () => _isCreationsExpanded = !_isCreationsExpanded),
               active: widget.isCreationMode,
               trailing: widget.isCreationMode
-                  ? Icon(Icons.check_rounded, color: nomad.textPrimary, size: 18)
+                  ? Icon(Icons.check_rounded,
+                      color: nomad.textPrimary, size: 18)
                   : Icon(
                       _isCreationsExpanded
                           ? Icons.keyboard_arrow_up
@@ -2790,12 +2849,16 @@ class _ModelPickerDropdownState extends State<_ModelPickerDropdown>
           final model = entry.value;
           String modelSuffix = '';
           final mn = model.name.toLowerCase();
-          if (mn.contains('lite')) {
+          if (mn.contains('nano')) {
+            modelSuffix = ' Nano';
+          } else if (mn.contains('lite')) {
             modelSuffix = ' Lite';
           } else if (mn.contains('steady')) {
             modelSuffix = ' Steady';
           } else if (mn.contains('smart')) {
             modelSuffix = ' Smart';
+          } else if (mn.contains('pro')) {
+            modelSuffix = ' Pro';
           } else if (mn.contains('creative')) {
             modelSuffix = ' Creative';
           }
