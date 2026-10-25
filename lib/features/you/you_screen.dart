@@ -8,13 +8,12 @@ import '../../core/theme/nomad_theme.dart';
 import '../../core/widgets/nomad_widgets.dart';
 import '../../core/widgets/nomad_animations.dart';
 
-/// You — memory orbit.
-///
-/// On capable hardware the memories orbit continuously around the central
-/// node. On low-end devices (see [PerformanceService]) the decorative
-/// `..repeat()` controllers are skipped entirely and the scene renders as a
-/// calm, static arrangement — freeing the frame budget so the page transition
-/// and entrance stay smooth instead of snapping in after a delay.
+final youMemoryServiceProvider =
+    Provider<MemoryService>((ref) => MemoryService());
+final youLowEndProvider =
+    Provider<bool>((ref) => PerformanceService.instance.isLowEnd);
+
+/// Memories remain browsable without waiting for, or running, the orbit.
 class YouScreen extends ConsumerStatefulWidget {
   const YouScreen({super.key});
 
@@ -22,146 +21,374 @@ class YouScreen extends ConsumerStatefulWidget {
   ConsumerState<YouScreen> createState() => _YouScreenState();
 }
 
-class _YouScreenState extends ConsumerState<YouScreen>
-    with TickerProviderStateMixin {
-  late final bool _lowEnd = PerformanceService.instance.isLowEnd;
-  late final AnimationController _orbitController;
-  List<Memory> _memories = MemoryService().getAllMemories();
+class _YouScreenState extends ConsumerState<YouScreen> {
+  late final _memoryService = ref.read(youMemoryServiceProvider);
+  List<Memory> _memories = [];
+  bool _loading = true;
+  bool _loadFailed = false;
+  bool _preferList = false;
 
   void _refreshMemories() {
     if (!mounted) return;
-    setState(() => _memories = MemoryService().getAllMemories());
+    setState(() => _memories = _memoryService.getAllMemories());
   }
 
   @override
   void initState() {
     super.initState();
-    _orbitController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 20),
-    );
-    // Only run the always-on orbit loop on capable hardware.
-    if (!_lowEnd) _orbitController.repeat();
+    _loadMemories();
   }
 
-  @override
-  void dispose() {
-    _orbitController.dispose();
-    super.dispose();
+  Future<void> _loadMemories() async {
+    setState(() {
+      _loading = true;
+      _loadFailed = false;
+    });
+    try {
+      // Startup opens this encrypted box after the first frame. Await it here
+      // too, rather than retaining the empty snapshot from before it opened.
+      await _memoryService.init();
+      if (!mounted) return;
+      setState(() {
+        _memories = _memoryService.getAllMemories();
+        _loading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadFailed = true;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     final textTheme = Theme.of(context).textTheme;
-    final topPadding = MediaQuery.of(context).padding.top;
+    final lowEnd = ref.watch(youLowEndProvider);
+    final media = MediaQuery.of(context);
+
+    Widget? status;
+    if (_loading) {
+      status = const Center(
+        child: CircularProgressIndicator(semanticsLabel: 'Loading memories'),
+      );
+    } else if (_loadFailed) {
+      status = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Semantics(
+            liveRegion: true,
+            child: const Text(
+              'Could not load memories. Please try again.',
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextButton.icon(
+            onPressed: _loadMemories,
+            style: TextButton.styleFrom(
+              minimumSize: const Size(48, 48),
+              visualDensity: VisualDensity.standard,
+            ),
+            icon: const Icon(Icons.refresh_rounded),
+            label: const Text('Retry loading memories'),
+          ),
+        ],
+      );
+    } else if (_memories.isEmpty) {
+      status = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.bubble_chart_rounded,
+              size: 48, color: nomad.textSecondary.withValues(alpha: 0.5)),
+          const SizedBox(height: 16),
+          Text(
+            'Nothing remembered yet',
+            textAlign: TextAlign.center,
+            style: textTheme.titleMedium,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Nomad saves facts and preferences here as you chat, or add one yourself.',
+            textAlign: TextAlign.center,
+            style: textTheme.bodySmall?.copyWith(color: nomad.textSecondary),
+          ),
+        ],
+      );
+    }
 
     return Scaffold(
       backgroundColor: nomad.background,
+      // Only the add dialog has a text field; it handles its own keyboard inset.
+      resizeToAvoidBottomInset: false,
       body: NomadPageReveal(
-        child: Stack(
-          children: [
-            // Orbit UI / empty state
-            if (_memories.isEmpty)
-              Positioned.fill(
-                child: NomadRevealItem(
-                  index: 2,
-                  child: Center(
+        child: SafeArea(
+          bottom: false,
+          child: LayoutBuilder(builder: (context, constraints) {
+            final canOrbit = !lowEnd &&
+                !media.disableAnimations &&
+                !media.accessibleNavigation &&
+                media.textScaler.scale(24) <= 36 &&
+                constraints.maxWidth >= 760 &&
+                constraints.maxHeight >= 760;
+            final showList = !canOrbit || _preferList;
+            final header = Padding(
+              padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      NomadBackButton(onTap: () {
+                        if (context.canPop()) {
+                          context.pop();
+                        } else {
+                          context.go('/home');
+                        }
+                      }),
+                      const Spacer(),
+                      if (canOrbit && _memories.isNotEmpty)
+                        BouncyTap(
+                          onTap: () => setState(() => _preferList = !showList),
+                          tooltip: showList
+                              ? 'Show memory orbit'
+                              : 'Show memory list',
+                          child: Container(
+                            constraints: const BoxConstraints(minHeight: 48),
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            decoration: BoxDecoration(
+                              color: nomad.surface,
+                              borderRadius:
+                                  BorderRadius.circular(NomadRadii.control),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(showList
+                                    ? Icons.bubble_chart_rounded
+                                    : Icons.list_rounded),
+                                const SizedBox(width: 8),
+                                Text(showList ? 'Orbit' : 'List'),
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  NomadTitle(
+                    title: 'You',
+                    subtitle: _loading || _loadFailed || _memories.isEmpty
+                        ? null
+                        : '${_memories.length} ${_memories.length == 1 ? 'memory' : 'memories'}',
+                  ),
+                ],
+              ),
+            );
+
+            if (!showList && status == null) {
+              return Column(
+                children: [
+                  header,
+                  Expanded(
+                    child: _OrbitUI(
+                      memories: _memories,
+                      onOpen: _showMemoryDetail,
+                    ),
+                  ),
+                ],
+              );
+            }
+
+            return CustomScrollView(
+              key: const PageStorageKey('memory-list'),
+              slivers: [
+                SliverToBoxAdapter(child: header),
+                if (status != null)
+                  SliverFillRemaining(
+                    hasScrollBody: false,
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 48),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.bubble_chart_rounded,
-                              size: 48,
-                              color: nomad.textSecondary.withValues(alpha: 0.5)),
-                          const SizedBox(height: 16),
-                          Text(
-                            "Nothing remembered yet",
-                            textAlign: TextAlign.center,
-                            style: textTheme.titleMedium,
+                      padding: const EdgeInsets.all(28),
+                      child: Center(child: status),
+                    ),
+                  )
+                else
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                    sliver: SliverList.builder(
+                      itemCount: _memories.length,
+                      itemBuilder: (context, index) {
+                        final memory = _memories[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: BouncyTap(
+                            key: ValueKey('memory-${memory.id}'),
+                            onTap: () => _showMemoryDetail(memory),
+                            semanticLabel:
+                                'View ${memory.category} memory: ${memory.content}',
+                            scaleDown: 0.98,
+                            borderRadius:
+                                BorderRadius.circular(NomadRadii.card),
+                            child: Container(
+                              constraints: const BoxConstraints(minHeight: 72),
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                color: nomad.surface,
+                                borderRadius:
+                                    BorderRadius.circular(NomadRadii.card),
+                              ),
+                              child: Row(
+                                children: [
+                                  NomadStickerChip(
+                                      icon: _getCategoryIcon(memory.category)),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(memory.category.toUpperCase(),
+                                            style: textTheme.labelSmall
+                                                ?.copyWith(
+                                                    color:
+                                                        nomad.textSecondary)),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          memory.content,
+                                          maxLines: 3,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: textTheme.bodyMedium,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Icon(Icons.chevron_right_rounded,
+                                      color: nomad.textSecondary),
+                                ],
+                              ),
+                            ),
                           ),
-                          const SizedBox(height: 6),
-                          Text(
-                            "Nomad saves facts and preferences here as you chat, or add one yourself.",
-                            textAlign: TextAlign.center,
-                            style: textTheme.bodySmall
-                                ?.copyWith(color: nomad.textSecondary),
-                          ),
-                        ],
-                      ),
+                        );
+                      },
                     ),
                   ),
+              ],
+            );
+          }),
+        ),
+      ),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          child: Center(
+            heightFactor: 1,
+            child: BouncyTap(
+              onTap: _loading || _loadFailed ? null : _showAddMemoryDialog,
+              tooltip: 'Add memory',
+              borderRadius: BorderRadius.circular(NomadRadii.card),
+              child: Container(
+                constraints: const BoxConstraints(minHeight: 48),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                decoration: BoxDecoration(
+                  color: nomad.surface,
+                  borderRadius: BorderRadius.circular(NomadRadii.card),
                 ),
-              )
-            else
-              Positioned.fill(
-                child: NomadRevealItem(
-                  index: 2,
-                  slideOffset: 0,
-                  child: _OrbitUI(
-                    memories: _memories,
-                    controller: _orbitController,
-                    onChanged: _refreshMemories,
-                    lowEnd: _lowEnd,
-                  ),
-                ),
-              ),
-
-            // Header (kept above the orbit so it stays tappable).
-            Positioned(
-              left: 20,
-              top: topPadding + 48,
-              child: NomadRevealItem(
-                index: 0,
-                slideOffset: 10,
-                child: NomadBackButton(onTap: () => context.pop()),
-              ),
-            ),
-            Positioned(
-              left: 20,
-              top: topPadding + 100,
-              child: const NomadRevealItem(
-                index: 1,
-                slideOffset: 12,
-                child: NomadTitle(title: "You"),
-              ),
-            ),
-
-            // Bottom Controls
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 40 + MediaQuery.of(context).padding.bottom,
-              child: Center(
-                child: NomadRevealItem(
-                  index: 3,
-                  slideOffset: 24,
-                  child: BouncyTap(
-                    onTap: () => _showAddMemoryDialog(context),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 14),
-                      decoration: BoxDecoration(
-                        color: nomad.surface,
-                        borderRadius: BorderRadius.circular(NomadRadii.card),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const NomadStickerChip(icon: Icons.add_rounded),
-                          const SizedBox(width: 12),
-                          Text(
-                            "Add Memory",
-                            style: textTheme.bodyMedium
-                                ?.copyWith(fontWeight: FontWeight.w600),
-                          ),
-                        ],
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const NomadStickerChip(icon: Icons.add_rounded),
+                    const SizedBox(width: 12),
+                    Flexible(
+                      child: Text(
+                        'Add Memory',
+                        style: textTheme.bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
                       ),
                     ),
-                  ),
+                  ],
                 ),
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showAddMemoryDialog() {
+    final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
+    var content = '';
+    var saving = false;
+    String? error;
+
+    showDialog<void>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          backgroundColor: nomad.surface,
+          scrollable: true,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(NomadRadii.dialog)),
+          title: const Text('New Memory'),
+          content: TextField(
+            onChanged: (value) => content = value,
+            enabled: !saving,
+            autofocus: true,
+            decoration: InputDecoration(
+              labelText: 'Memory',
+              hintText: 'What should Nomad remember?',
+              errorText: error,
+              errorMaxLines: 3,
+            ),
+            maxLines: 3,
+          ),
+          actions: [
+            TextButton(
+              onPressed: saving ? null : () => Navigator.pop(dialogContext),
+              style: TextButton.styleFrom(
+                minimumSize: const Size(48, 48),
+                visualDensity: VisualDensity.standard,
+              ),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      final text = content.trim();
+                      if (text.isEmpty) {
+                        setDialogState(() => error = 'Enter a memory to save.');
+                        return;
+                      }
+                      setDialogState(() {
+                        saving = true;
+                        error = null;
+                      });
+                      try {
+                        await _memoryService.saveMemory(text);
+                        _refreshMemories();
+                        if (dialogContext.mounted) {
+                          Navigator.pop(dialogContext);
+                        }
+                      } catch (_) {
+                        if (!dialogContext.mounted) return;
+                        setDialogState(() {
+                          saving = false;
+                          error =
+                              'Could not save this memory. Please try again.';
+                        });
+                      }
+                    },
+              style: TextButton.styleFrom(
+                minimumSize: const Size(48, 48),
+                visualDensity: VisualDensity.standard,
+              ),
+              child: Text(saving ? 'Saving...' : 'Save'),
             ),
           ],
         ),
@@ -169,70 +396,160 @@ class _YouScreenState extends ConsumerState<YouScreen>
     );
   }
 
-  void _showAddMemoryDialog(BuildContext context) {
-    final controller = TextEditingController();
+  void _showMemoryDetail(Memory memory) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
-
-    showDialog(
+    var deleting = false;
+    String? error;
+    showModalBottomSheet<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: nomad.surface,
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(NomadRadii.dialog)),
-        title: const Text("New Memory"),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: "What should Nomad remember?",
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      constraints: const BoxConstraints(maxWidth: 640),
+      builder: (context) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => Container(
+          constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.85),
+          padding: const EdgeInsets.all(28),
+          decoration: BoxDecoration(
+            color: nomad.surface,
+            borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(NomadRadii.sheet)),
           ),
-          maxLines: 3,
+          child: SafeArea(
+            top: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    NomadStickerChip(icon: _getCategoryIcon(memory.category)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        memory.category.toUpperCase(),
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: nomad.textSecondary,
+                              letterSpacing: 1.0,
+                            ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Delete memory',
+                      constraints:
+                          const BoxConstraints(minWidth: 48, minHeight: 48),
+                      visualDensity: VisualDensity.standard,
+                      style: IconButton.styleFrom(
+                        backgroundColor:
+                            nomad.accentWarm.withValues(alpha: 0.18),
+                        foregroundColor: nomad.textPrimary,
+                      ),
+                      onPressed: deleting
+                          ? null
+                          : () async {
+                              setSheetState(() {
+                                deleting = true;
+                                error = null;
+                              });
+                              try {
+                                await _memoryService.deleteMemory(memory.id);
+                                _refreshMemories();
+                                if (sheetContext.mounted) {
+                                  Navigator.pop(sheetContext);
+                                }
+                              } catch (_) {
+                                if (!sheetContext.mounted) return;
+                                setSheetState(() {
+                                  deleting = false;
+                                  error =
+                                      'Could not delete this memory. Please try again.';
+                                });
+                              }
+                            },
+                      icon: const Icon(Icons.delete_outline_rounded),
+                    ),
+                    IconButton(
+                      tooltip: 'Close memory',
+                      constraints:
+                          const BoxConstraints(minWidth: 48, minHeight: 48),
+                      visualDensity: VisualDensity.standard,
+                      onPressed: () => Navigator.pop(sheetContext),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                Flexible(
+                  child: SingleChildScrollView(
+                    child: Text(
+                      memory.content,
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                            height: 1.6,
+                            fontSize: 17,
+                          ),
+                    ),
+                  ),
+                ),
+                if (error != null) ...[
+                  const SizedBox(height: 12),
+                  Semantics(liveRegion: true, child: Text(error!)),
+                ],
+                const SizedBox(height: 12),
+              ],
+            ),
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Cancel"),
-          ),
-          TextButton(
-            onPressed: () async {
-              if (controller.text.isNotEmpty) {
-                await MemoryService().saveMemory(controller.text);
-                if (mounted) {
-                  setState(() {
-                    _memories.clear();
-                    _memories.addAll(MemoryService().getAllMemories());
-                  });
-                  if (context.mounted) Navigator.of(context).pop();
-                }
-              }
-            },
-            child: const Text("Save"),
-          ),
-        ],
       ),
     );
   }
 }
 
-class _OrbitUI extends StatelessWidget {
+IconData _getCategoryIcon(String category) {
+  switch (category) {
+    case 'preference':
+      return Icons.favorite_rounded;
+    case 'fact':
+      return Icons.lightbulb_rounded;
+    case 'biography':
+      return Icons.history_edu_rounded;
+    default:
+      return Icons.bubble_chart_rounded;
+  }
+}
+
+class _OrbitUI extends StatefulWidget {
   final List<Memory> memories;
-  final AnimationController controller;
-  final VoidCallback onChanged;
-  final bool lowEnd;
+  final ValueChanged<Memory> onOpen;
 
   const _OrbitUI({
     required this.memories,
-    required this.controller,
-    required this.onChanged,
-    required this.lowEnd,
+    required this.onOpen,
   });
 
-  Widget _buildScene(BuildContext context, double progress) {
+  @override
+  State<_OrbitUI> createState() => _OrbitUIState();
+}
+
+class _OrbitUIState extends State<_OrbitUI>
+    with SingleTickerProviderStateMixin {
+  late final _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 20),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Widget _buildScene(BuildContext context, double progress, double radiusStep) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     return Stack(
       alignment: Alignment.center,
       children: [
-        // Background decoration — ignore pointer so the header stays tappable.
+        // Decorative connections and rings must not intercept memory taps.
         IgnorePointer(
           child: Stack(
             alignment: Alignment.center,
@@ -241,17 +558,18 @@ class _OrbitUI extends StatelessWidget {
               CustomPaint(
                 size: Size.infinite,
                 painter: _NeuralConnectionPainter(
-                  memories: memories,
+                  memories: widget.memories,
                   progress: progress,
                   nomad: nomad,
+                  radiusStep: radiusStep,
                 ),
               ),
 
               // Orbit Rings (Subtle)
               for (var i = 1; i <= 3; i++)
                 Container(
-                  width: i * 220.0,
-                  height: i * 220.0,
+                  width: i * radiusStep * 2,
+                  height: i * radiusStep * 2,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     border: Border.all(
@@ -264,18 +582,19 @@ class _OrbitUI extends StatelessWidget {
           ),
         ),
 
-        // Central "You" Node with (optionally) pulsing aura
-        _CentralNode(nomad: nomad, lowEnd: lowEnd),
+        // Central "You" node with pulsing aura.
+        _CentralNode(nomad: nomad),
 
         // Orbiting Memories
-        for (var i = 0; i < memories.length; i++)
+        for (var i = 0; i < widget.memories.length; i++)
           _OrbitingNode(
-            memory: memories[i],
+            memory: widget.memories[i],
             index: i,
-            total: memories.length,
+            total: widget.memories.length,
             progress: progress,
             nomad: nomad,
-            onChanged: onChanged,
+            radiusStep: radiusStep,
+            onTap: () => widget.onOpen(widget.memories[i]),
           ),
       ],
     );
@@ -283,21 +602,24 @@ class _OrbitUI extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Low-end: paint a single static snapshot — no per-frame rebuilds.
-    if (lowEnd) {
-      return _buildScene(context, 0.0);
-    }
-    return AnimatedBuilder(
-      animation: controller,
-      builder: (context, child) => _buildScene(context, controller.value),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Leave room for the 52px targets, their 5px float, and focus outlines.
+        final radiusStep =
+            math.min(110.0, (constraints.biggest.shortestSide / 2 - 36) / 3);
+        return AnimatedBuilder(
+          animation: _controller,
+          builder: (context, child) =>
+              _buildScene(context, _controller.value, radiusStep),
+        );
+      },
     );
   }
 }
 
 class _CentralNode extends StatefulWidget {
   final NomadColorsExtension nomad;
-  final bool lowEnd;
-  const _CentralNode({required this.nomad, required this.lowEnd});
+  const _CentralNode({required this.nomad});
 
   @override
   State<_CentralNode> createState() => _CentralNodeState();
@@ -305,23 +627,14 @@ class _CentralNode extends StatefulWidget {
 
 class _CentralNodeState extends State<_CentralNode>
     with SingleTickerProviderStateMixin {
-  AnimationController? _pulseController;
-
-  @override
-  void initState() {
-    super.initState();
-    // Only spin up the always-on pulse on capable hardware.
-    if (!widget.lowEnd) {
-      _pulseController = AnimationController(
-        vsync: this,
-        duration: const Duration(seconds: 4),
-      )..repeat(reverse: true);
-    }
-  }
+  late final _pulseController = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 4),
+  )..repeat(reverse: true);
 
   @override
   void dispose() {
-    _pulseController?.dispose();
+    _pulseController.dispose();
     super.dispose();
   }
 
@@ -350,14 +663,9 @@ class _CentralNodeState extends State<_CentralNode>
 
   @override
   Widget build(BuildContext context) {
-    final controller = _pulseController;
-    if (controller == null) {
-      // Static resting state on low-end devices.
-      return _node(0.4);
-    }
     return AnimatedBuilder(
-      animation: controller,
-      builder: (context, child) => _node(controller.value),
+      animation: _pulseController,
+      builder: (context, child) => _node(_pulseController.value),
     );
   }
 }
@@ -366,11 +674,13 @@ class _NeuralConnectionPainter extends CustomPainter {
   final List<Memory> memories;
   final double progress;
   final NomadColorsExtension nomad;
+  final double radiusStep;
 
   _NeuralConnectionPainter({
     required this.memories,
     required this.progress,
     required this.nomad,
+    required this.radiusStep,
   });
 
   @override
@@ -383,7 +693,7 @@ class _NeuralConnectionPainter extends CustomPainter {
 
     for (var i = 0; i < memories.length; i++) {
       final orbitIndex = (i % 3) + 1;
-      final radius = orbitIndex * 110.0;
+      final radius = orbitIndex * radiusStep;
       final speed = 1.0 / (orbitIndex * 1.5);
       final angle = (progress * speed * 2 * math.pi) +
           (i * (2 * math.pi / memories.length));
@@ -396,7 +706,11 @@ class _NeuralConnectionPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_NeuralConnectionPainter old) => old.progress != progress;
+  bool shouldRepaint(_NeuralConnectionPainter old) =>
+      old.progress != progress ||
+      old.radiusStep != radiusStep ||
+      old.memories != memories ||
+      old.nomad != nomad;
 }
 
 class _OrbitingNode extends StatelessWidget {
@@ -405,7 +719,8 @@ class _OrbitingNode extends StatelessWidget {
   final int total;
   final double progress;
   final NomadColorsExtension nomad;
-  final VoidCallback onChanged;
+  final double radiusStep;
+  final VoidCallback onTap;
 
   const _OrbitingNode({
     required this.memory,
@@ -413,13 +728,14 @@ class _OrbitingNode extends StatelessWidget {
     required this.total,
     required this.progress,
     required this.nomad,
-    required this.onChanged,
+    required this.radiusStep,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final orbitIndex = (index % 3) + 1;
-    final radius = orbitIndex * 110.0;
+    final radius = orbitIndex * radiusStep;
     final speed = 1.0 / (orbitIndex * 1.5);
 
     final angle =
@@ -434,7 +750,10 @@ class _OrbitingNode extends StatelessWidget {
     return Transform.translate(
       offset: Offset(dx + floatX, dy + floatY),
       child: BouncyTap(
-        onTap: () => _showMemoryDetail(context, memory),
+        key: ValueKey('memory-${memory.id}'),
+        onTap: onTap,
+        tooltip: 'View ${memory.category} memory: ${memory.content}',
+        borderRadius: BorderRadius.circular(999),
         child: Container(
           width: 52,
           height: 52,
@@ -451,73 +770,6 @@ class _OrbitingNode extends StatelessWidget {
               ),
             ),
           ),
-        ),
-      ),
-    );
-  }
-
-  IconData _getCategoryIcon(String category) {
-    switch (category) {
-      case 'preference':
-        return Icons.favorite_rounded;
-      case 'fact':
-        return Icons.lightbulb_rounded;
-      case 'biography':
-        return Icons.history_edu_rounded;
-      default:
-        return Icons.bubble_chart_rounded;
-    }
-  }
-
-  void _showMemoryDetail(BuildContext context, Memory memory) {
-    final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(28),
-        decoration: BoxDecoration(
-          color: nomad.surface,
-          borderRadius: const BorderRadius.vertical(
-              top: Radius.circular(NomadRadii.sheet)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                NomadStickerChip(icon: _getCategoryIcon(memory.category)),
-                const SizedBox(width: 12),
-                Text(
-                  memory.category.toUpperCase(),
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: nomad.textSecondary,
-                        letterSpacing: 1.0,
-                      ),
-                ),
-                const Spacer(),
-                BouncyTap(
-                  onTap: () async {
-                    await MemoryService().deleteMemory(memory.id);
-                    onChanged();
-                    if (context.mounted) Navigator.pop(context);
-                  },
-                  child: Icon(Icons.delete_outline_rounded,
-                      color: nomad.accentWarm, size: 24),
-                ),
-              ],
-            ),
-            const SizedBox(height: 24),
-            Text(
-              memory.content,
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    height: 1.6,
-                    fontSize: 17,
-                  ),
-            ),
-            const SizedBox(height: 40),
-          ],
         ),
       ),
     );

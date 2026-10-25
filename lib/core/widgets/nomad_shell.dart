@@ -41,30 +41,23 @@ class NomadShell extends ConsumerStatefulWidget {
 class _NomadShellState extends ConsumerState<NomadShell> {
   int _currentIndex = 0;
   int _previousIndex = 0;
-  double _sidebarWidth = 400.0;
-  static const double _minSidebarWidth = 200.0;
-  static const double _maxSidebarWidth = 400.0;
+  double _sidebarWidth = 280.0;
+  static const double _minSidebarWidth = 240.0;
+  static const double _maxSidebarWidth = 360.0;
   bool _isDragging = false;
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final nextIndex = _getIndexFromLocation(GoRouterState.of(context).location);
-    if (nextIndex != _currentIndex) {
-      _previousIndex = _currentIndex;
-      _currentIndex = nextIndex;
-    }
-  }
-
   int _getIndexFromLocation(String location) {
-    if (location.startsWith('/home')) {
-      return 0;
-    }
-    if (location.startsWith('/creations')) {
-      return 1;
-    }
-    if (location.startsWith('/settings')) {
-      return 2;
+    const destinations = [
+      '/home',
+      '/code',
+      '/creations',
+      '/you',
+      '/skills',
+      '/settings/models',
+      '/settings',
+    ];
+    for (var index = 0; index < destinations.length; index++) {
+      if (location.startsWith(destinations[index])) return index;
     }
     return 0;
   }
@@ -74,11 +67,22 @@ class _NomadShellState extends ConsumerState<NomadShell> {
     final isDesktop = context.isDesktop;
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     final isSidebarOpen = ref.watch(sidebarOpenProvider);
+    final location = GoRouter.of(context).location;
+    final nextIndex = _getIndexFromLocation(location);
+    if (nextIndex != _currentIndex) {
+      _previousIndex = _currentIndex;
+      _currentIndex = nextIndex;
+    }
+    final fullWidth = location == '/home' ||
+        location.startsWith('/code') ||
+        location.startsWith('/assistant');
 
     final body = TabNavigationInfo(
       previousIndex: _previousIndex,
       currentIndex: _currentIndex,
-      child: isDesktop ? ResponsiveCenter(child: widget.child) : widget.child,
+      child: isDesktop && !fullWidth
+          ? ResponsiveCenter(child: widget.child)
+          : widget.child,
     );
 
     return Scaffold(
@@ -88,7 +92,9 @@ class _NomadShellState extends ConsumerState<NomadShell> {
         children: [
           if (isDesktop)
             AnimatedContainer(
-              duration: _isDragging ? Duration.zero : const Duration(milliseconds: 300),
+              duration: _isDragging || MediaQuery.disableAnimationsOf(context)
+                  ? Duration.zero
+                  : const Duration(milliseconds: 300),
               curve: Curves.easeOutCubic,
               width: isSidebarOpen ? _sidebarWidth + 8.0 : 0.0,
               child: ClipRect(
@@ -100,7 +106,17 @@ class _NomadShellState extends ConsumerState<NomadShell> {
                     children: [
                       SizedBox(
                         width: _sidebarWidth,
-                        child: const RepaintBoundary(child: ChatHistoryScreen()),
+                        child: ExcludeFocus(
+                          excluding: !isSidebarOpen,
+                          child: ExcludeSemantics(
+                            excluding: !isSidebarOpen,
+                            child: RepaintBoundary(
+                              child: ChatHistoryScreen(
+                                currentLocation: location,
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
                       MouseRegion(
                         cursor: SystemMouseCursors.resizeColumn,
@@ -118,14 +134,12 @@ class _NomadShellState extends ConsumerState<NomadShell> {
                             });
                           },
                           onPanEnd: (_) => setState(() => _isDragging = false),
-                          onPanCancel: () => setState(() => _isDragging = false),
+                          onPanCancel: () =>
+                              setState(() => _isDragging = false),
                           child: Container(
                             width: 8,
                             alignment: Alignment.center,
-                            child: Container(
-                              width: 1,
-                              color: Colors.transparent,
-                            ),
+                            child: Container(width: 1, color: nomad.border),
                           ),
                         ),
                       ),
@@ -135,7 +149,12 @@ class _NomadShellState extends ConsumerState<NomadShell> {
               ),
             ),
           Expanded(
-            child: RepaintBoundary(child: body),
+            // The nested route must not block the sibling navigation semantics.
+            child: Semantics(
+              container: true,
+              explicitChildNodes: true,
+              child: RepaintBoundary(child: body),
+            ),
           ),
         ],
       ),

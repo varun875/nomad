@@ -11,9 +11,9 @@ import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:llamadart/llamadart.dart' hide ChatSession;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:speech_to_text/speech_to_text.dart';
-import 'package:speech_to_text/speech_recognition_result.dart';
-import '../../core/services/tts_service.dart';
+import 'package:uuid/uuid.dart';
+import '../../core/services/assistant_platform_service.dart';
+import '../../core/services/voice_session_controller.dart';
 import '../creations/creations_screen.dart';
 import '../../core/services/inference_service.dart';
 import '../../core/services/memory_service.dart';
@@ -31,8 +31,9 @@ import '../../core/widgets/rich_message_renderer.dart';
 import '../../core/widgets/nomad_widgets.dart';
 import '../../core/widgets/nomad_animations.dart';
 import '../../core/constants/responsive.dart';
-import '../../core/utils/live_transcript.dart';
+import '../../core/utils/assistant_command.dart';
 import '../../core/utils/message_text.dart';
+import '../../core/widgets/voice_status_panel.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import '../../core/services/html_renderer.dart';
@@ -50,8 +51,32 @@ final conversationsProvider =
   (ref) => ConversationsNotifier(),
 );
 
+final chatInferenceProvider =
+    Provider<InferenceService>((ref) => InferenceService());
+final activeConversationIdProvider = Provider<String?>((ref) {
+  ref.watch(chatMessagesProvider);
+  return ref.read(chatMessagesProvider.notifier).conversationId;
+});
+final chatRevisionProvider = Provider<int>((ref) {
+  ref.watch(chatMessagesProvider);
+  return ref.read(chatMessagesProvider.notifier).revision;
+});
+
 class ChatMessagesNotifier extends StateNotifier<List<ChatMessage>> {
   ChatMessagesNotifier() : super([]);
+  String? _conversationId;
+  int _revision = 0;
+
+  String? get conversationId => _conversationId;
+  int get revision => _revision;
+  String ensureConversationId() => _conversationId ??= const Uuid().v4();
+
+  void openConversation(ChatSession conversation) {
+    _conversationId = conversation.id;
+    _revision++;
+    state = List.of(conversation.messages);
+  }
+
   void addMessage(ChatMessage msg) => state = [...state, msg];
   void updateLastMessage(ChatMessage msg) {
     if (state.isNotEmpty && !state.last.fromUser) {
@@ -61,7 +86,12 @@ class ChatMessagesNotifier extends StateNotifier<List<ChatMessage>> {
     }
   }
 
-  void clear() => state = [];
+  void clear() {
+    _conversationId = null;
+    _revision++;
+    state = [];
+  }
+
   void setMessages(List<ChatMessage> messages) => state = messages;
 }
 
@@ -106,7 +136,8 @@ class ConversationsNotifier extends StateNotifier<List<ChatSession>> {
 // ============================================================================
 class ChatScreen extends ConsumerStatefulWidget {
   final String? modelId;
-  const ChatScreen({super.key, this.modelId});
+  final AssistantLaunch? assistantLaunch;
+  const ChatScreen({super.key, this.modelId, this.assistantLaunch});
 
   @override
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
@@ -116,12 +147,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
+  final _composerLink = LayerLink();
   final _scrollController = ScrollController();
   bool _isStreaming = false;
-  String? _currentConversationId;
   bool _hasText = false;
   bool _isClearingChat = false;
-  DateTime? _lastSendTime;
   bool _searchEnabled = false;
   List<String> _attachedImages = [];
   bool _isModelSelectorExpanded = false;
@@ -135,14 +165,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   bool _isCreationMode = false;
   String _creationType = 'playground';
 
-  // Live voice mode state
-  bool _isLiveMode = false;
-  bool _isLiveMuted = false;
-  bool _shouldSpeakResponse = false;
-  final SpeechToText _stt = SpeechToText();
-  final TtsService _tts = TtsService();
-  String _liveTranscript = '';
-  final ValueNotifier<double> _soundLevel = ValueNotifier(0.0);
+  late final VoiceSessionController _voice;
+  GoRouter? _voiceRouter;
+  TextEditingValue? _voiceDraft;
+  Future<void>? _messageTask;
+  bool _wasLiveMode = false;
+  bool get _isLiveMode => _voice.isOwnedBy(this);
+  bool get _isLiveMuted => _voice.phase == VoicePhase.paused;
 
   // Drives the chat-composer <-> live-voice morph (0 = chat, 1 = live).
   late final AnimationController _modeController;
@@ -177,28 +206,78 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   String? _contextSummary;
 
   final _streamingTextNotifier = ValueNotifier<String>('');
-  final StringBuffer _streamBuffer = StringBuffer();
+  int _generation = 0;
+  StreamIterator<String>? _activeTokens;
   bool _shouldStop = false;
-  Timer? _sttSilenceTimer;
 
   void _stopGeneration() {
     _shouldStop = true;
-    if (mounted) setState(() => _isStreaming = false);
+    unawaited(_activeTokens?.cancel().catchError((Object error) {
+      debugPrint('Could not stop generation: $error');
+    }));
   }
 
   void _startNewChat() {
-    // Stop any active stream synchronously so its post-stream persist
-    // (which checks _currentConversationId) cannot orphan or mix into the new chat.
-    if (_isStreaming) _stopGeneration();
-    _shuffleSuggestions();
-    // Clear the conversation id synchronously - the delayed clear is only for the fade animation.
-    _currentConversationId = null;
+    ref.read(chatMessagesProvider.notifier).clear();
+  }
+
+  bool _isCurrent(int generation) => mounted && generation == _generation;
+
+  void _conversationChanged() {
+    ++_generation;
+    _voiceDraft = null;
+    _stopGeneration();
+    _controller.clear();
     _contextSummary = null;
-    setState(() => _isClearingChat = true);
-    Future.delayed(const Duration(milliseconds: 200), () {
-      ref.read(chatMessagesProvider.notifier).clear();
-      if (mounted) setState(() => _isClearingChat = false);
+    _streamingTextNotifier.value = '';
+    _shuffleSuggestions();
+    setState(() {
+      _attachedImages = [];
+      _isStreaming = false;
+      _isModelLoading = false;
+      _isClearingChat = false;
     });
+    if (_isLiveMode) {
+      unawaited(_exitLiveMode());
+    }
+  }
+
+  Stream<String> _readTokens(Stream<String> stream, int generation) async* {
+    if (!_isCurrent(generation) || _shouldStop) return;
+    final iterator = StreamIterator(stream);
+    _activeTokens = iterator;
+    try {
+      while (await iterator.moveNext()) {
+        if (!_isCurrent(generation) || _shouldStop) break;
+        yield iterator.current;
+      }
+    } finally {
+      await iterator.cancel();
+      if (identical(_activeTokens, iterator)) _activeTokens = null;
+    }
+  }
+
+  Future<void> _saveConversation(
+      String id, List<ChatMessage> messages, HFModel? model) async {
+    ChatSession? existing;
+    for (final conversation in ref.read(conversationsProvider)) {
+      if (conversation.id == id) existing = conversation;
+    }
+    final text = messages.first.text;
+    final title = existing?.title ??
+        (text.runes.length > 30
+            ? '${String.fromCharCodes(text.runes.take(30))}...'
+            : text);
+    await ref
+        .read(conversationsProvider.notifier)
+        .updateConversation(ChatSession(
+          id: id,
+          title: title,
+          messages: List.of(messages),
+          updatedAt: DateTime.now(),
+          modelId: model?.id ?? existing?.modelId,
+          projectId: existing?.projectId,
+        ));
   }
 
   /// Summarize older conversation turns to stay within the context window.
@@ -206,8 +285,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Future<void> _compactContextIfNeeded(
     List<ChatMessage> messages,
     HFModel model,
+    int generation,
   ) async {
-    final ctxSize = InferenceService().contextSize;
+    final ctxSize = ref.read(chatInferenceProvider).contextSize;
     if (ctxSize <= 0) return;
 
     // Only compact if we have enough messages and context is filling up
@@ -232,23 +312,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         .map((m) => '${m.fromUser ? "User" : "Assistant"}: ${m.text}')
         .join('\n');
 
-    final summaryStream = InferenceService().streamChat(
-      modelId: model.id,
-      prompt: 'Summarize this conversation in 1-2 sentences. '
-          'Keep key facts, names, decisions, and user preferences.\n\n$transcript',
-      localPath: model.localPath,
-      systemPrompt: 'Output only the summary. No preamble or greeting.',
-      maxTokens: 128,
-    );
+    final summaryStream = ref.read(chatInferenceProvider).streamChat(
+          modelId: model.id,
+          prompt: 'Summarize this conversation in 1-2 sentences. '
+              'Keep key facts, names, decisions, and user preferences.\n\n$transcript',
+          localPath: model.localPath,
+          systemPrompt: 'Output only the summary. No preamble or greeting.',
+          maxTokens: 128,
+        );
 
     String summary = '';
-    await for (final token in summaryStream) {
-      if (!mounted) return;
+    await for (final token in _readTokens(summaryStream, generation)) {
+      if (!_isCurrent(generation) || _shouldStop) break;
       summary += token;
     }
 
     summary = summary.trim();
-    if (summary.isNotEmpty && mounted) {
+    if (summary.isNotEmpty &&
+        !summary.startsWith('Error:') &&
+        _isCurrent(generation) &&
+        !_shouldStop) {
       setState(() => _contextSummary = summary);
     }
   }
@@ -259,100 +342,47 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     required List<Map<String, String>> history,
     required String systemPrompt,
     required StringBuffer buffer,
+    required int generation,
+    VoiceReply? voiceReply,
     List<String>? imagePaths,
     List<ToolDefinition>? tools,
   }) async {
-    final stream = InferenceService().streamChat(
-      modelId: model.id,
-      prompt: prompt,
-      localPath: model.localPath,
-      systemPrompt: systemPrompt,
-      history: history,
-      maxTokens: 4096,
-      imagePaths: imagePaths,
-      tools: tools,
-    );
-
-    String sentenceBuffer = "";
-    bool hasStartedSpeaking = false;
-    final markupState = _StreamingMarkupState();
+    final stream = ref.read(chatInferenceProvider).streamChat(
+          modelId: model.id,
+          prompt: prompt,
+          localPath: model.localPath,
+          systemPrompt: systemPrompt,
+          history: history,
+          maxTokens: voiceReply == null ? 4096 : 512,
+          imagePaths: imagePaths,
+          tools: tools,
+        );
 
     // Throttle UI updates to ~20fps. Pushing the entire growing buffer to the
     // widget tree on every token starves the frame pipeline on low-end
     // devices, which makes animations stutter or freeze and scrolling jank.
     // Coalescing updates keeps the UI smooth without changing the final text.
     int lastUiFlushMs = 0;
-    final uiFlushIntervalMs =
-        PerformanceService.instance.isConstrained ? 80 : 50;
+    final uiFlushIntervalMs = PerformanceService.instance.streamingIntervalMs;
 
-    await for (final token in stream) {
-      if (!mounted || _shouldStop) break;
+    await for (final token in _readTokens(stream, generation)) {
+      if (!_isCurrent(generation) || _shouldStop) break;
+      if (_isModelLoading) setState(() => _isModelLoading = false);
       buffer.write(token);
       final nowMs = DateTime.now().millisecondsSinceEpoch;
       if (nowMs - lastUiFlushMs >= uiFlushIntervalMs) {
         _streamingTextNotifier.value = buffer.toString();
         lastUiFlushMs = nowMs;
       }
-      sentenceBuffer += token;
-      markupState.add(token);
-
-      if (_shouldSpeakResponse && !_isCreationMode) {
-        if (!markupState.isHidden) {
-          final match =
-              RegExp(r'([.!?]+(?=\s))|\n+').firstMatch(sentenceBuffer);
-          final commaMatch = sentenceBuffer.length > 50
-              ? RegExp(r',+(?=\s)').firstMatch(sentenceBuffer)
-              : null;
-
-          final breakMatch = match ?? commaMatch;
-
-          if (breakMatch != null) {
-            final breakIndex = breakMatch.end;
-            final chunk = sentenceBuffer.substring(0, breakIndex);
-            final cleanSentence = _cleanForSpeech(chunk);
-            if (cleanSentence.isNotEmpty) {
-              _tts.speak(cleanSentence);
-              hasStartedSpeaking = true;
-            }
-            sentenceBuffer = sentenceBuffer.substring(breakIndex).trimLeft();
-          }
-        }
-      }
+      voiceReply?.addText(token);
     }
 
     // Flush any tokens withheld by the throttle so the fully streamed text is
     // visible before it is swapped for the persisted message bubble.
-    if (mounted) _streamingTextNotifier.value = buffer.toString();
+    if (!_isCurrent(generation)) return buffer.toString();
+    _streamingTextNotifier.value = buffer.toString();
 
-    if (_shouldSpeakResponse &&
-        !_isCreationMode &&
-        sentenceBuffer.trim().isNotEmpty) {
-      final cleanSentence = _cleanForSpeech(sentenceBuffer);
-      if (cleanSentence.isNotEmpty) {
-        await _tts.speak(cleanSentence);
-      }
-    } else if (_shouldSpeakResponse &&
-        !_isCreationMode &&
-        !hasStartedSpeaking) {
-      final response = buffer.toString().trim();
-      if (response.isNotEmpty) {
-        await _tts.speak(_cleanForSpeech(response));
-      }
-    }
-
-    _shouldSpeakResponse = false;
     return buffer.toString();
-  }
-
-  String _cleanForSpeech(String text) {
-    return text
-        .replaceAll(RegExp(r'```[\s\S]*?```'), '') // Remove code blocks
-        .replaceAll(
-            RegExp(r'<think>[\s\S]*?<\/think>'), '') // Remove think blocks
-        .replaceAll(RegExp(r'`[^`]+`'), '') // Remove inline code
-        .replaceAll(RegExp(r'[*_#~\[\](){}]+'), '') // Remove markdown syntax
-        .replaceAll(RegExp(r'\n+'), ' ') // Replace newlines with spaces
-        .trim();
   }
 
   String? _extractHtml(String text) {
@@ -374,278 +404,272 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     return null;
   }
 
-  Future<void> _sendMessage() async {
-    final text = _controller.text.trim();
-    final hasImages = _attachedImages.isNotEmpty;
-    if ((text.isEmpty && !hasImages) || _isStreaming) return;
+  Future<void> _sendMessage({VoiceReply? voiceReply}) {
+    final task = _sendMessageImpl(voiceReply: voiceReply);
+    _messageTask = task;
+    return task.whenComplete(() {
+      if (identical(_messageTask, task)) _messageTask = null;
+    });
+  }
 
-    final now = DateTime.now();
-    if (_lastSendTime != null &&
-        now.difference(_lastSendTime!).inMilliseconds < 500) {
+  Future<void> _sendMessageImpl({VoiceReply? voiceReply}) async {
+    if (voiceReply != null && !voiceReply.isCurrent) return;
+    final text = _controller.text.trim();
+    final attachedImages = List<String>.from(_attachedImages);
+    if ((text.isEmpty && attachedImages.isEmpty) || _isStreaming) return;
+    final inference = ref.read(chatInferenceProvider);
+    if (inference.isGenerating) {
+      if (voiceReply != null) {
+        throw const VoiceSessionException(VoiceIssue.audioBusy);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+            'The previous response is still stopping. Please try again shortly.'),
+      ));
       return;
     }
-    _lastSendTime = now;
-
-    final isFirstMessage = _currentConversationId == null;
-    if (isFirstMessage) {
-      _currentConversationId = DateTime.now().millisecondsSinceEpoch.toString();
-    }
-
-    HapticFeedback.lightImpact();
-    final attachedImages = List<String>.from(_attachedImages);
-    if (hasImages) {
-      // Inform the user up front instead of letting the engine throw a raw
-      // "Cannot read image.png" error when the model has no vision encoder.
-      final modelForVision = ref.read(selectedModelProvider);
-      final visionCapable = modelForVision != null &&
-          modelForVision.localPath != null &&
-          ModelService.getMmprojUrl(modelForVision.id) != null &&
-          await File(modelForVision.localPath!.replaceAll('.gguf', '.mmproj'))
-              .exists();
-      if (!visionCapable) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                  AppLocalizations.of(context)!.modelDoesNotSupportImageInput),
-            ),
-          );
-        }
-        return;
-      }
-    }
-    ref.read(chatMessagesProvider.notifier).addMessage(
-          ChatMessage(
-            text: text,
-            fromUser: true,
-            time: DateTime.now(),
-            imagePaths: attachedImages,
-          ),
-        );
-    _controller.clear();
-    _focusNode.unfocus();
-    _attachedImages = [];
-    _scrollToBottom(smooth: false);
-
     final selectedModel = ref.read(selectedModelProvider);
     if (selectedModel == null || selectedModel.localPath == null) {
-      if (!mounted) return;
-      ref.read(chatMessagesProvider.notifier).updateLastMessage(
-            ChatMessage(
-              text: AppLocalizations.of(context)!.noModelSelectedMessage,
-              fromUser: false,
-              time: DateTime.now(),
-            ),
-          );
+      if (voiceReply != null) {
+        if (_voiceDraft?.text.trim().isEmpty ?? true) {
+          _voiceDraft = TextEditingValue(text: text);
+        }
+        throw const VoiceSessionException(VoiceIssue.noModel);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(AppLocalizations.of(context)!.noModelSelectedMessage),
+      ));
       return;
     }
 
-    // Show loading backdrop while model loads
-    final needsLoad = !InferenceService().isLoaded ||
-        InferenceService().modelPath != selectedModel.localPath;
-    if (needsLoad && mounted) {
-      setState(() => _isModelLoading = true);
-    }
-
+    final generation = ++_generation;
+    final isCreation = _isCreationMode;
+    final creationType = _creationType;
+    final buffer = StringBuffer();
     setState(() => _isStreaming = true);
     _shouldStop = false;
-    _streamBuffer.clear();
     _streamingTextNotifier.value = '';
-    _scrollToBottom(smooth: false);
+    try {
+      if (attachedImages.isNotEmpty) {
+        final supportsImages = ModelService.getMmprojUrl(selectedModel.id) !=
+                null &&
+            await File(selectedModel.localPath!.replaceAll('.gguf', '.mmproj'))
+                .exists();
+        if (!mounted || !_isCurrent(generation) || _shouldStop) return;
+        if (!supportsImages) {
+          if (voiceReply != null) {
+            throw const VoiceSessionException(VoiceIssue.responseFailed);
+          }
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                AppLocalizations.of(context)!.modelDoesNotSupportImageInput),
+          ));
+          return;
+        }
+      }
+      if (!mounted || !_isCurrent(generation) || _shouldStop) return;
+      final chat = ref.read(chatMessagesProvider.notifier);
+      final conversationId = chat.ensureConversationId();
+      final historyMessages =
+          List<ChatMessage>.of(ref.read(chatMessagesProvider));
+      final userMessage = ChatMessage(
+          text: text,
+          fromUser: true,
+          time: DateTime.now(),
+          imagePaths: attachedImages);
+      final requestMessages = [...historyMessages, userMessage];
+      chat.addMessage(userMessage);
+      _controller.clear();
+      if (!context.isDesktop) _focusNode.unfocus();
+      setState(() {
+        _attachedImages = [];
+        _isModelLoading = !inference.isLoaded ||
+            inference.modelPath != selectedModel.localPath;
+      });
+      HapticFeedback.lightImpact();
+      _scrollToBottom(smooth: false);
 
-    final currentMessages = ref.read(chatMessagesProvider);
-    // The current prompt is already visible in the message list, but
-    // streamChat appends it separately. Excluding it here avoids evaluating
-    // every new user prompt twice and improves prompt-prefix cache reuse.
-    final historyMessages =
-        currentMessages.isNotEmpty && currentMessages.last.fromUser
-            ? currentMessages.sublist(0, currentMessages.length - 1)
-            : currentMessages;
-
-    // Proactively compact context before it overflows
-    if (!PerformanceService.instance.isConstrained) {
-      await _compactContextIfNeeded(historyMessages, selectedModel);
-    }
-
-    final history = <Map<String, String>>[];
-
-    if (_contextSummary != null && _contextSummary!.isNotEmpty) {
-      // If we have a proactive summary of older turns, prepend it.
-      history.add({'role': 'assistant', 'content': _contextSummary!});
-
-      // And then only append the messages that were not included in the summary (the last 4 messages).
-      final recentMessages = historyMessages.length > 4
+      // Save the prompt before generating. A canceled/switched chat retains its
+      // question, and every write uses this request's captured identity/data.
+      await _saveConversation(conversationId, requestMessages, selectedModel);
+      if (!_isCurrent(generation) || _shouldStop) return;
+      if (!PerformanceService.instance.isConstrained) {
+        await _compactContextIfNeeded(
+            historyMessages, selectedModel, generation);
+      }
+      if (!_isCurrent(generation) || _shouldStop) return;
+      final history = <Map<String, String>>[];
+      final hasSummary = _contextSummary?.isNotEmpty ?? false;
+      if (hasSummary) {
+        history.add({'role': 'assistant', 'content': _contextSummary!});
+      }
+      final retained = hasSummary && historyMessages.length > 4
           ? historyMessages.sublist(historyMessages.length - 4)
           : historyMessages;
-      for (final msg in recentMessages) {
-        if (msg.fromUser) {
-          history.add({'role': 'user', 'content': msg.text});
-        } else if (msg.text.isNotEmpty) {
-          history.add({'role': 'assistant', 'content': msg.text});
+      for (final message in retained) {
+        if (message.fromUser || message.text.isNotEmpty) {
+          history.add({
+            'role': message.fromUser ? 'user' : 'assistant',
+            'content': message.text
+          });
         }
       }
-    } else {
-      // If no compaction has occurred yet, pass the FULL conversation history.
-      // This maintains an identical prefix in successive turns, allowing llama.cpp
-      // to reuse the prompt prefix cache (reusePromptPrefix) for instant replies.
-      for (final msg in historyMessages) {
-        if (msg.fromUser) {
-          history.add({'role': 'user', 'content': msg.text});
-        } else if (msg.text.isNotEmpty) {
-          history.add({'role': 'assistant', 'content': msg.text});
+      final actualPrompt = text.isNotEmpty ? text : 'Describe this image.';
+      final toolsByName = <String, ToolDefinition>{};
+      if (!isCreation) {
+        for (final tool in ref.read(skillProvider.notifier).getActiveTools()) {
+          toolsByName[tool.name] = tool;
+        }
+        if (_searchEnabled) {
+          toolsByName['web_search'] = SearchService.webSearchTool;
         }
       }
-    }
+      final allTools = toolsByName.values.toList();
+      final systemPrompt = isCreation
+          ? (creationType == 'widget'
+              ? "You are Nomad Widget Creator. The user wants to build a home screen widget. "
+                  "Always respond with a complete, self-contained HTML file inside a markdown code block (```html ... ```). "
+                  "The widget must be visually striking at small sizes (2x2 or 4x2 cells). "
+                  "Use bold solid background colors, large readable text, minimal content. "
+                  "Think: clock, weather, counter, status display, countdown, quick note. "
+                  "Avoid: scrollable content, tiny text, complex layouts, hover effects. "
+                  "Use inline CSS and JavaScript. Make it work well at 300x200 pixels."
+              : "You are Nomad Creator. The user wants to build an interactive HTML mini-app. "
+                  "Always respond with a complete, self-contained HTML file inside a markdown code block (```html ... ```). "
+                  "Use inline CSS and JavaScript. Make it visually polished and interactive.")
+          : "You are Nomad, a warm, witty, and genuinely helpful on-device AI companion. "
+              "Talk like a thoughtful friend, not a manual: use contractions, natural phrasing, and a relaxed, human tone. "
+              "Vary your sentence rhythm, show a little personality and warmth, and keep things concise and to the point. "
+              "Avoid robotic boilerplate, over-formality, and dumping long bullet lists unless they're truly the clearest way to help. "
+              "Never claim you changed phone settings, opened an app, or set an alarm unless an actual tool result confirms it. "
+              "${voiceReply != null ? 'This is a spoken conversation. Answer in the user\'s language, in one to three short, natural sentences. Avoid markdown, lists, code, and reading out URLs. Use web search for current facts instead of guessing. ' : ''}"
+              "${MemoryService().getMemoriesForPrompt()}${ref.read(skillProvider.notifier).getActiveSkillInstructions()}";
 
-    final prompt =
-        text.isNotEmpty ? text : (hasImages ? 'Describe this image.' : '');
-    final isCreation = _isCreationMode;
-    final actualPrompt = prompt;
-
-    // Tools are derived from the enabled Skills (Skills screen), deduped by
-    // name. The composer's web-search toggle adds web search on demand for the
-    // current message even if the skill is off.
-    final toolsByName = <String, ToolDefinition>{};
-    if (!isCreation) {
-      for (final t in ref.read(skillProvider.notifier).getActiveTools()) {
-        toolsByName[t.name] = t;
-      }
-      if (_searchEnabled) {
-        toolsByName['web_search'] = SearchService.webSearchTool;
-      }
-    }
-    final List<ToolDefinition> allTools = toolsByName.values.toList();
-
-    final systemPrompt = isCreation
-        ? (_creationType == 'widget'
-            ? "You are Nomad Widget Creator. The user wants to build a home screen widget. "
-                "Always respond with a complete, self-contained HTML file inside a markdown code block (```html ... ```). "
-                "The widget must be visually striking at small sizes (2x2 or 4x2 cells). "
-                "Use bold solid background colors, large readable text, minimal content. "
-                "Think: clock, weather, counter, status display, countdown, quick note. "
-                "Avoid: scrollable content, tiny text, complex layouts, hover effects. "
-                "Use inline CSS and JavaScript. Make it work well at 300x200 pixels."
-            : "You are Nomad Creator. The user wants to build an interactive HTML mini-app. "
-                "Always respond with a complete, self-contained HTML file inside a markdown code block (```html ... ```). "
-                "Use inline CSS and JavaScript. Make it visually polished and interactive.")
-        : "You are Nomad, a warm, witty, and genuinely helpful on-device AI companion. "
-            "Talk like a thoughtful friend, not a manual: use contractions, natural phrasing, and a relaxed, human tone. "
-            "Vary your sentence rhythm, show a little personality and warmth, and keep things concise and to the point. "
-            "Avoid robotic boilerplate, over-formality, and dumping long bullet lists unless they're truly the clearest way to help. "
-            "When your reply will be read aloud, favor short, flowing sentences that sound good spoken. "
-            "${MemoryService().getMemoriesForPrompt()}${ref.read(skillProvider.notifier).getActiveSkillInstructions()}";
-
-    String accumulated = await _generateWithModel(
-      prompt: actualPrompt,
-      model: selectedModel,
-      history: history,
-      systemPrompt: systemPrompt,
-      buffer: _streamBuffer,
-      imagePaths: attachedImages,
-      tools: allTools,
-    );
-
-    // Model is now loaded and responding — clear loading state
-    if (_isModelLoading && mounted) {
-      setState(() => _isModelLoading = false);
-    }
-
-    if (!_shouldStop && looksTruncated(accumulated)) {
-      _streamBuffer.clear();
-      _streamingTextNotifier.value = accumulated;
-
-      final contHistory = <Map<String, String>>[
-        ...history,
-        {'role': 'assistant', 'content': accumulated},
-      ];
-
-      final cont = await _generateWithModel(
-        prompt: 'Continue from where you left off. Do not repeat anything.',
+      String accumulated = await _generateWithModel(
+        prompt: actualPrompt,
         model: selectedModel,
-        history: contHistory,
+        history: history,
         systemPrompt: systemPrompt,
-        buffer: _streamBuffer,
-        imagePaths: attachedImages.isNotEmpty ? attachedImages : null,
-        tools: allTools.isNotEmpty ? allTools : null,
+        buffer: buffer,
+        generation: generation,
+        voiceReply: voiceReply,
+        imagePaths: attachedImages,
+        tools: allTools,
       );
 
-      if (cont.trim().isNotEmpty) {
-        accumulated += cont;
-      }
-    }
+      if (!_isCurrent(generation)) return;
+      setState(() => _isModelLoading = false);
 
-    if (mounted && accumulated.trim().isNotEmpty) {
-      setState(() => _isStreaming = false);
-      HapticFeedback.selectionClick();
+      if (voiceReply == null && !_shouldStop && looksTruncated(accumulated)) {
+        buffer.clear();
+        _streamingTextNotifier.value = accumulated;
 
-      // Persist even when stopped - user watched the partial reply, don't discard it.
-      final displayText =
-          _shouldStop ? '$accumulated\n\n*(stopped)*' : accumulated;
-      ref.read(chatMessagesProvider.notifier).addMessage(
-            ChatMessage(
-              text: displayText,
-              fromUser: false,
-              time: DateTime.now(),
-              outputTokPerSec: InferenceService().lastOutputTokPerSec,
-              outputTokens: InferenceService().lastOutputTokens,
-            ),
-          );
+        final contHistory = <Map<String, String>>[
+          ...history,
+          {'role': 'user', 'content': actualPrompt},
+          {'role': 'assistant', 'content': accumulated},
+        ];
 
-      if (_currentConversationId != null) {
-        final messages = ref.read(chatMessagesProvider);
-        final firstText = messages.first.text;
-        final title = firstText.runes.length > 30
-            ? '${String.fromCharCodes(firstText.runes.take(30))}...'
-            : firstText;
-        final conv = ChatSession(
-          id: _currentConversationId!,
-          title: title,
-          messages: messages,
-          updatedAt: DateTime.now(),
-          modelId: selectedModel.id,
-          projectId: null,
+        final cont = await _generateWithModel(
+          prompt: 'Continue from where you left off. Do not repeat anything.',
+          model: selectedModel,
+          history: contHistory,
+          systemPrompt: systemPrompt,
+          buffer: buffer,
+          generation: generation,
+          imagePaths: attachedImages.isNotEmpty ? attachedImages : null,
+          tools: allTools.isNotEmpty ? allTools : null,
         );
-        ref.read(conversationsProvider.notifier).updateConversation(conv);
+
+        if (cont.trim().isNotEmpty) {
+          accumulated += cont;
+        }
       }
 
-      if (isCreation) {
-        final html = _extractHtml(accumulated);
-        if (html != null && html.isNotEmpty && mounted) {
-          final chosenType = _creationType;
-          final creationId = DateTime.now().millisecondsSinceEpoch.toString();
-          final title = actualPrompt.runes.length > 30
-              ? '${String.fromCharCodes(actualPrompt.runes.take(30))}...'
-              : actualPrompt;
+      if (!_isCurrent(generation)) return;
+      if (accumulated.trim().isEmpty && !_shouldStop) {
+        accumulated = 'Error: The model returned no text. Please try again.';
+      }
+      if (accumulated.trim().isNotEmpty) {
+        HapticFeedback.selectionClick();
 
-          String? screenshotPath;
-          if (chosenType == 'widget') {
-            try {
-              final imageBytes = await HtmlRenderer.renderToImage(
-                html,
-                context: context,
-                size: const Size(400, 300),
-              );
-              if (imageBytes != null) {
-                final dir = await getApplicationDocumentsDirectory();
-                final file =
-                    File('${dir.path}/creation_screenshot_$creationId.png');
-                await file.writeAsBytes(imageBytes);
-                screenshotPath = file.path;
-              }
-            } catch (_) {}
-          }
-
-          final newCreation = Creation(
-            id: creationId,
-            title: title,
-            html: html,
-            createdAt: DateTime.now(),
-            updatedAt: DateTime.now(),
-            type: chosenType,
-            screenshotPath: screenshotPath,
-          );
-          await ref.read(creationsProvider.notifier).saveCreation(newCreation);
+        // Persist even when stopped - user watched the partial reply, don't discard it.
+        final displayText =
+            _shouldStop ? '$accumulated\n\n*(stopped)*' : accumulated;
+        final reply = ChatMessage(
+          text: displayText,
+          fromUser: false,
+          time: DateTime.now(),
+          outputTokPerSec: inference.lastOutputTokPerSec,
+          outputTokens: inference.lastOutputTokens,
+        );
+        ref.read(chatMessagesProvider.notifier).addMessage(reply);
+        await _saveConversation(
+            conversationId, [...requestMessages, reply], selectedModel);
+        if (!mounted || !_isCurrent(generation)) return;
+        if (voiceReply != null &&
+            accumulated.startsWith('Error:') &&
+            !_shouldStop) {
+          throw const VoiceSessionException(VoiceIssue.responseFailed);
         }
+
+        if (isCreation) {
+          final html = _extractHtml(accumulated);
+          if (html != null && html.isNotEmpty && mounted) {
+            final chosenType = creationType;
+            final creationId = DateTime.now().millisecondsSinceEpoch.toString();
+            final title = actualPrompt.runes.length > 30
+                ? '${String.fromCharCodes(actualPrompt.runes.take(30))}...'
+                : actualPrompt;
+
+            String? screenshotPath;
+            if (chosenType == 'widget') {
+              try {
+                final imageBytes = await HtmlRenderer.renderToImage(
+                  html,
+                  context: context,
+                  size: const Size(400, 300),
+                );
+                if (imageBytes != null) {
+                  final dir = await getApplicationDocumentsDirectory();
+                  final file =
+                      File('${dir.path}/creation_screenshot_$creationId.png');
+                  await file.writeAsBytes(imageBytes);
+                  screenshotPath = file.path;
+                }
+              } catch (_) {}
+            }
+
+            final newCreation = Creation(
+              id: creationId,
+              title: title,
+              html: html,
+              createdAt: DateTime.now(),
+              updatedAt: DateTime.now(),
+              type: chosenType,
+              screenshotPath: screenshotPath,
+            );
+            if (_isCurrent(generation)) {
+              await ref
+                  .read(creationsProvider.notifier)
+                  .saveCreation(newCreation);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (voiceReply != null) rethrow;
+      if (mounted && _isCurrent(generation)) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Could not finish or save the response: $error'),
+        ));
+      }
+    } finally {
+      if (_isCurrent(generation)) {
+        setState(() {
+          _isStreaming = false;
+          _isModelLoading = false;
+        });
       }
     }
   }
@@ -673,12 +697,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   Future<void> _pickImages() async {
     final picker = ImagePicker();
+    if (PerformanceService.instance.isLowEnd) {
+      final image = await picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 70,
+        maxWidth: 512,
+        maxHeight: 512,
+      );
+      if (image != null && mounted) {
+        setState(() => _attachedImages = [image.path]);
+      }
+      return;
+    }
     final images = await picker.pickMultiImage(
       imageQuality: 70,
       maxWidth: 768,
       maxHeight: 768,
     );
-    if (images.isNotEmpty) {
+    if (images.isNotEmpty && mounted) {
       setState(() {
         _attachedImages = [
           ..._attachedImages,
@@ -737,6 +773,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   @override
   void initState() {
     super.initState();
+    _focusNode.onKeyEvent = (node, event) {
+      final composing = _controller.value.composing;
+      if (!context.isDesktop ||
+          (event.logicalKey != LogicalKeyboardKey.enter &&
+              event.logicalKey != LogicalKeyboardKey.numpadEnter) ||
+          HardwareKeyboard.instance.isShiftPressed ||
+          (composing.isValid && !composing.isCollapsed)) {
+        return KeyEventResult.ignored;
+      }
+      if (event is KeyDownEvent) _sendMessage();
+      return KeyEventResult.handled;
+    };
     _modeController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 460),
@@ -746,6 +794,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       curve: Curves.easeOutCubic,
       reverseCurve: Curves.easeInCubic,
     );
+    _voice = ref.read(voiceSessionProvider);
+    _voice.addListener(_onVoiceChanged);
     _shuffleSuggestions();
     _controller.addListener(() {
       final hasText = _controller.text.isNotEmpty;
@@ -754,50 +804,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       }
     });
     _loadPreferences();
-    _checkAssistantTrigger();
+    _queueAssistantLaunch(widget.assistantLaunch);
     WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // A warm-start assistant launch stashes its intent in MainActivity; pick it up
-    // whenever the app returns to the foreground.
-    if (state == AppLifecycleState.resumed) {
-      _checkAssistantTrigger();
+    // Permission dialogs temporarily make the app inactive. Only a real
+    // background transition ends voice; returning never silently opens the mic.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.hidden) {
+      unawaited(_voice.stop(owner: this));
     }
-  }
-
-  Future<void> _checkAssistantTrigger() async {
-    // Make sure the voice engines are ready before we try to enter LiveMode,
-    // otherwise an assistant launch that arrives during startup can race STT
-    // init and silently fail to listen.
-    await _initVoiceEngines();
-    try {
-      const channel = MethodChannel('com.varun.nomad/storage');
-      final dynamic res = await channel.invokeMethod('checkAssistantTrigger');
-      if (!mounted) return;
-      String? prompt;
-      bool wasAssistant = false;
-      if (res is Map) {
-        prompt = (res['prompt'] as String?)?.trim();
-        wasAssistant = res['assistant'] as bool? ?? false;
-      } else if (res == true) {
-        wasAssistant = true;
-      }
-      if (prompt != null && prompt.isNotEmpty) {
-        // Popup already transcribed the request - send it directly and speak
-        // the reply (do NOT enter in-app STT or it would grab the mic).
-        _controller.text = prompt;
-        setState(() {
-          _hasText = true;
-          _shouldSpeakResponse = true;
-        });
-        await _sendMessage();
-      } else if (wasAssistant && mounted) {
-        // Nomad Live now lives in the chat composer, so launch straight into it.
-        _enterLiveMode(isInitial: true);
-      }
-    } catch (_) {}
   }
 
   void _loadPreferences() async {
@@ -807,229 +826,210 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         () => _showTokenSpeed = prefs.getBool('showTokenSpeed') ?? false,
       );
     }
-    _initVoiceEngines();
-  }
-
-  Future<void> _initVoiceEngines() async {
-    try {
-      await _stt.initialize(
-        onStatus: _onSttStatus,
-        onError: (_) {},
-      );
-    } catch (e) {
-      debugPrint('Voice engine error: $e');
-    }
-  }
-
-  void _onSttStatus(String status) {
-    if (!mounted) return;
-    if (status == 'done' && _isLiveMode) {
-      // If it stopped but we are still in live mode, restart it
-      // This might beep, but it's a fallback for when the engine times out
-      _resumeListening();
-    }
-  }
-
-  void _onSttResult(SpeechRecognitionResult result) {
-    if (!mounted) return;
-
-    // IGNORE results if Nomad is currently speaking or streaming a response
-    if (_tts.isSpeaking || _isStreaming) {
-      return;
-    }
-
-    // Latest partial wins: speech_to_text rewrites partials as it refines, so the
-    // newest result is the authoritative transcript (handles both growth and the
-    // "news today" -> "news" shrink) without duplicating text.
-    final merged =
-        mergePartialTranscript(_liveTranscript, result.recognizedWords);
-    if (merged == _liveTranscript) return;
-
-    setState(() {
-      _liveTranscript = merged;
-    });
-
-    _sttSilenceTimer?.cancel();
-    _sttSilenceTimer = Timer(const Duration(milliseconds: 1500), () {
-      if (mounted && _isLiveMode) {
-        _finalizeLiveTranscript();
-      }
-    });
-
-    if (result.finalResult) {
-      _finalizeLiveTranscript();
-    }
-  }
-
-  /// Re-arms speech recognition without resetting transcript/speech state. Used to
-  /// resume listening after the engine times out or after a reply finishes.
-  Future<void> _resumeListening() async {
-    if (!_isLiveMode || _isLiveMuted) return;
-
-    // Silence system beeps on Android.
-    if (Platform.isAndroid) {
-      try {
-        const channel = MethodChannel('com.varun.nomad/storage');
-        await channel.invokeMethod('muteSystemSounds');
-        await channel.invokeMethod('muteMusicStream');
-      } catch (_) {}
-    }
-
-    try {
-      await _stt.listen(
-        onResult: _onSttResult,
-        onSoundLevelChange: (level) => _soundLevel.value = level,
-        listenOptions: SpeechListenOptions(
-          partialResults: true,
-          cancelOnError: true,
-          listenMode: ListenMode.dictation,
-          // onDevice: false -> Google network recognizer. The offline Soda
-          // engine on Samsung/MediaTek returns empty results (NO_SPEECH_DETECTED
-          // even when speech was detected) and caps sessions at 10s.
-          onDevice: false,
-          listenFor: const Duration(hours: 1), // Practically infinite
-          pauseFor: const Duration(seconds: 30), // Don't stop on short pauses
-        ),
-      );
-    } catch (_) {
-      // Mic permission denied or engine not initialized - don't leave UI stuck in live mode.
-      if (mounted) {
-        setState(() {
-          _isLiveMode = false;
-          _modeController.reverse();
-        });
-      }
-      await _tts.stop();
-    }
-  }
-
-  Future<void> _finalizeLiveTranscript() async {
-    if (!_isLiveMode) return;
-    _sttSilenceTimer?.cancel();
-
-    final text = _liveTranscript.trim();
-    if (text.isEmpty) return;
-
-    _controller.text = text;
-    setState(() {
-      _hasText = true;
-      _liveTranscript = '';
-      _shouldSpeakResponse = true;
-    });
-
-    await _sendMessage();
-
-    // The reply has been spoken (TTS drained); keep listening if still live.
-    if (mounted && _isLiveMode && !_isLiveMuted) {
-      await _resumeListening();
-    }
   }
 
   Future<void> _toggleLiveMode() async {
     if (_isLiveMode) {
       await _exitLiveMode();
     } else {
-      await _enterLiveMode(isInitial: true);
+      await _enterLiveMode();
     }
   }
 
-  Future<void> _enterLiveMode(
-      {bool skipStopTts = false, bool isInitial = false}) async {
-    if (isInitial) {
-      HapticFeedback.heavyImpact();
-    }
-
-    setState(() {
-      _isLiveMode = true;
-      _liveTranscript = '';
-      _shouldSpeakResponse = !_isLiveMuted;
-    });
+  Future<void> _enterLiveMode({String? initialPrompt}) async {
+    _focusNode.unfocus();
+    _voiceDraft ??= _controller.value;
     _closeAddMenu();
-    _modeController.forward();
-
-    if (!skipStopTts) {
-      await _tts.stop();
-    }
-
-    // Silence system beeps on Android
-    if (Platform.isAndroid) {
+    if (_isLiveMode) await _voice.pause();
+    if (_isStreaming) {
+      _stopGeneration();
       try {
-        _tts.enableAutoMute = true;
-        const channel = MethodChannel('com.varun.nomad/storage');
-        await channel.invokeMethod('muteSystemSounds');
-        await channel.invokeMethod('muteMusicStream');
+        await _messageTask;
       } catch (_) {}
     }
-
-    try {
-      await _stt.listen(
-        onResult: _onSttResult,
-        onSoundLevelChange: (level) => _soundLevel.value = level,
-        listenOptions: SpeechListenOptions(
-          partialResults: true,
-          cancelOnError: true,
-          listenMode: ListenMode.dictation,
-          // onDevice: false -> Google network recognizer. The offline Soda
-          // engine on Samsung/MediaTek returns empty results (NO_SPEECH_DETECTED
-          // even when speech was detected) and caps sessions at 10s.
-          onDevice: false,
-          listenFor: const Duration(hours: 1), // Practically infinite
-          pauseFor: const Duration(seconds: 30), // Don't stop on short pauses
-        ),
-      );
-    } catch (_) {
-      // Mic permission denied or engine not initialized - don't leave UI stuck in live mode.
-      if (mounted) {
-        setState(() => _isLiveMode = false);
-        _modeController.reverse();
-      }
-      await _tts.stop();
-    }
+    if (!mounted || !_isCurrentVoiceRoute) return;
+    setState(() => _isCreationMode = false);
+    await _voice.start(
+      owner: this,
+      onRequest: _handleVoiceRequest,
+      cancelRequest: _stopGeneration,
+      localeId:
+          WidgetsBinding.instance.platformDispatcher.locale.toLanguageTag(),
+      initialPrompt: initialPrompt,
+    );
   }
 
   Future<void> _exitLiveMode() async {
     HapticFeedback.lightImpact();
-    _sttSilenceTimer?.cancel();
+    await _voice.stop(owner: this);
+  }
 
-    // Revert the UI immediately so the morph back to the text composer feels
-    // instant; the audio engines are torn down in the background afterwards.
-    if (mounted) {
-      setState(() {
-        _isLiveMode = false;
-        _liveTranscript = '';
-        _shouldSpeakResponse = false;
-      });
-      _modeController.reverse();
+  void _onVoiceChanged() {
+    if (!mounted) return;
+    final live = _isLiveMode;
+    if (live != _wasLiveMode) {
+      _wasLiveMode = live;
+      if (live) {
+        _modeController.forward();
+      } else {
+        _modeController.reverse();
+        final draft = _voiceDraft;
+        _voiceDraft = null;
+        if (draft != null) {
+          _controller.value =
+              draft.text.isEmpty && _controller.text.trim().isNotEmpty
+                  ? _controller.value
+                  : draft;
+        }
+      }
     }
+    setState(() {});
+  }
 
-    await _stt.stop();
-    await _tts.stop();
+  bool get _isCurrentVoiceRoute {
+    final location = _voiceRouter?.location;
+    if (location == null) return true;
+    final path = Uri.parse(location).path;
+    if (widget.assistantLaunch != null) return path == '/assistant';
+    if (widget.modelId != null) return path == '/model/${widget.modelId}';
+    return path == '/home';
+  }
 
-    // Restore system sounds on Android
-    if (Platform.isAndroid) {
-      try {
-        _tts.enableAutoMute = false;
-        const channel = MethodChannel('com.varun.nomad/storage');
-        await channel.invokeMethod('unmuteSystemSounds');
-        await channel.invokeMethod('unmuteMusicStream');
-      } catch (_) {}
+  void _onVoiceRouteChanged() {
+    if (_isLiveMode && !_isCurrentVoiceRoute) {
+      unawaited(_voice.stop(owner: this));
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.assistantLaunch?.id != widget.assistantLaunch?.id) {
+      _queueAssistantLaunch(widget.assistantLaunch);
+    }
+  }
+
+  void _queueAssistantLaunch(AssistantLaunch? launch) {
+    if (launch == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          widget.assistantLaunch?.id != launch.id ||
+          !_isCurrentVoiceRoute) {
+        return;
+      }
+      if (launch.voice) {
+        unawaited(_enterLiveMode(initialPrompt: launch.prompt));
+      } else {
+        if (launch.prompt != null) _controller.text = launch.prompt!;
+        _focusNode.requestFocus();
+      }
+    });
+  }
+
+  Future<void> _handleVoiceRequest(String text, VoiceReply reply) async {
+    if (!mounted || !reply.isCurrent) return;
+    final command = AssistantCommand.parse(text);
+    if (command?.action == 'endVoice') {
+      await _exitLiveMode();
+      return;
+    }
+    if (command != null) {
+      await _executeVoiceCommand(text, command, reply);
+      return;
+    }
+    _controller.text = text;
+    await _sendMessage(voiceReply: reply);
+  }
+
+  Future<void> _executeVoiceCommand(
+      String text, AssistantCommand command, VoiceReply voiceReply) async {
+    final generation = ++_generation;
+    _shouldStop = false;
+    final model = ref.read(selectedModelProvider);
+    final chat = ref.read(chatMessagesProvider.notifier);
+    final id = chat.ensureConversationId();
+    final question =
+        ChatMessage(text: text, fromUser: true, time: DateTime.now());
+    final messages = [...ref.read(chatMessagesProvider), question];
+    chat.addMessage(question);
+    _streamingTextNotifier.value = '';
+    setState(() => _isStreaming = true);
+    try {
+      await _saveConversation(id, messages, model);
+      if (!_isCurrent(generation) || _shouldStop || !voiceReply.isCurrent) {
+        return;
+      }
+      final result = command.response ??
+          (await ref.read(assistantPlatformProvider).executeAction(
+              command.action, command.arguments))['message'] as String? ??
+          'That action is not available on this device.';
+      if (!_isCurrent(generation)) return;
+      final answer =
+          ChatMessage(text: result, fromUser: false, time: DateTime.now());
+      chat.addMessage(answer);
+      await _saveConversation(id, [...messages, answer], model);
+      voiceReply.addText(result);
+      if (_isCurrent(generation)) _scrollToBottom();
+    } finally {
+      if (_isCurrent(generation)) setState(() => _isStreaming = false);
     }
   }
 
   void _toggleLiveMute() {
     HapticFeedback.selectionClick();
-    setState(() => _isLiveMuted = !_isLiveMuted);
     if (_isLiveMuted) {
-      _stt.stop();
-      _tts.stop();
+      unawaited(_voice.retry());
     } else {
-      _resumeListening();
+      unawaited(_voice.pause());
     }
+  }
+
+  Future<void> _openVoiceSettings(String kind) async {
+    try {
+      final opened =
+          await ref.read(assistantPlatformProvider).openSettings(kind);
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Open your device settings to configure microphone access and speech services.'),
+        ));
+      }
+    } catch (_) {}
+  }
+
+  Widget _buildLiveCenter() {
+    final responding = _voice.isResponding;
+    final retry =
+        _voice.phase == VoicePhase.paused || _voice.phase == VoicePhase.error;
+    return IconButton(
+      tooltip: responding
+          ? 'Interrupt and listen'
+          : retry
+              ? 'Resume listening'
+              : 'Finish speaking',
+      onPressed: responding
+          ? _voice.interrupt
+          : retry
+              ? _voice.retry
+              : _voice.finishListening,
+      icon: Icon(responding
+          ? Icons.stop_rounded
+          : retry
+              ? Icons.mic_off_rounded
+              : Icons.mic_rounded),
+      color: const Color(0xFF183F78),
+    );
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final router = GoRouter.maybeOf(context);
+    if (!identical(router, _voiceRouter)) {
+      _voiceRouter?.routerDelegate.removeListener(_onVoiceRouteChanged);
+      _voiceRouter = router;
+      router?.routerDelegate.addListener(_onVoiceRouteChanged);
+    }
     final brightness = Theme.of(context).brightness;
     SystemChrome.setSystemUIOverlayStyle(
       SystemUiOverlayStyle(
@@ -1042,36 +1042,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   @override
   void dispose() {
+    ++_generation;
+    _stopGeneration();
+    _voice.removeListener(_onVoiceChanged);
+    _voiceRouter?.routerDelegate.removeListener(_onVoiceRouteChanged);
+    unawaited(_voice.stop(owner: this));
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.dispose();
     _controller.dispose();
     _focusNode.dispose();
     _streamingTextNotifier.dispose();
     _modeController.dispose();
-    _soundLevel.dispose();
-    _sttSilenceTimer?.cancel();
-    _stt.stop();
-    _tts.stop();
-
-    // Ensure sounds are restored
-    if (Platform.isAndroid) {
-      _tts.enableAutoMute = false;
-      const channel = MethodChannel('com.varun.nomad/storage');
-      channel.invokeMethod('unmuteSystemSounds').catchError((_) => null);
-      channel.invokeMethod('unmuteMusicStream').catchError((_) => null);
-    }
-
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<int>(chatRevisionProvider, (previous, next) {
+      if (previous != next) _conversationChanged();
+    });
     final mediaQuery = MediaQuery.of(context);
     final topPadding = mediaQuery.padding.top;
     final keyboardHeight = mediaQuery.viewInsets.bottom;
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     final textTheme = Theme.of(context).textTheme;
 
+    final headerTop = topPadding + (context.isDesktop ? 24.0 : 16.0);
     final inputBottom = keyboardHeight > 0
         ? keyboardHeight + 16
         : MediaQuery.of(context).padding.bottom +
@@ -1082,771 +1078,752 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       child: Scaffold(
         backgroundColor: nomad.background,
         resizeToAvoidBottomInset: false,
-        body: GestureDetector(
-          onTap: () {
-            FocusScope.of(context).unfocus();
-            if (_isModelSelectorExpanded || _isAddMenuOpen) {
-              if (_isModelSelectorExpanded) _closeModelSelector();
-              if (_isAddMenuOpen) _closeAddMenu();
-            }
-          },
-          behavior: HitTestBehavior.translucent,
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: NomadBackdrop(
-                  state: _isModelLoading
-                      ? BackdropState.loading
-                      : _isStreaming
-                          ? BackdropState.streaming
-                          : BackdropState.idle,
+        body: LayoutBuilder(builder: (context, constraints) {
+          final contentInset =
+              math.max(20.0, (constraints.maxWidth - ContentWidths.chat) / 2);
+          return GestureDetector(
+            onTap: () {
+              FocusScope.of(context).unfocus();
+              if (_isModelSelectorExpanded || _isAddMenuOpen) {
+                if (_isModelSelectorExpanded) _closeModelSelector();
+                if (_isAddMenuOpen) _closeAddMenu();
+              }
+            },
+            behavior: HitTestBehavior.translucent,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: NomadBackdrop(
+                    state: _isModelLoading
+                        ? BackdropState.loading
+                        : _isStreaming
+                            ? BackdropState.streaming
+                            : BackdropState.idle,
+                  ),
                 ),
-              ),
-              Positioned(
-                left: 20,
-                right: 20,
-                top: topPadding + 90,
-                bottom: inputBottom,
-                child: Row(
-                  children: [
-                    Expanded(
-                      flex: 1,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: Stack(
-                              clipBehavior: Clip.none,
-                              children: [
-                                Positioned.fill(
-                                  child: Consumer(
-                                    builder: (context, ref, _) {
-                                      final messages =
-                                          ref.watch(chatMessagesProvider);
-                                      return AnimatedOpacity(
-                                        opacity: _isClearingChat ? 0.0 : 1.0,
-                                        duration:
-                                            const Duration(milliseconds: 180),
-                                        child: _AdaptiveShaderMask(
-                                          shaderCallback: (rect) {
-                                            return const LinearGradient(
-                                              begin: Alignment.topCenter,
-                                              end: Alignment.bottomCenter,
-                                              colors: [
-                                                Colors.transparent,
-                                                Colors.white,
-                                                Colors.white,
-                                                Colors.transparent,
-                                              ],
-                                              stops: [
-                                                0.0,
-                                                0.06,
-                                                0.94,
-                                                1.0,
-                                              ],
-                                            ).createShader(rect);
-                                          },
-                                          blendMode: BlendMode.dstIn,
-                                          child: messages.isEmpty
-                                              ? _buildEmptyState(context)
-                                              : ListView.builder(
-                                                  controller: _scrollController,
-                                                  padding:
-                                                      const EdgeInsets.only(
-                                                          top: 8),
-                                                  itemCount: messages.length +
-                                                      (_isStreaming ? 1 : 0),
-                                                  scrollCacheExtent:
-                                                      const ScrollCacheExtent
-                                                          .pixels(600),
-                                                  addAutomaticKeepAlives: false,
-                                                  addRepaintBoundaries: true,
-                                                  physics:
-                                                      const BouncingScrollPhysics(),
-                                                  itemBuilder:
-                                                      (context, index) {
-                                                    if (index ==
-                                                        messages.length) {
-                                                      return _buildStreamingBubble(
-                                                          true);
-                                                    }
-                                                    final msg = messages[index];
-                                                    final isLast = index ==
-                                                            messages.length -
-                                                                1 &&
-                                                        !_isStreaming;
-                                                    return _buildBubble(
-                                                      msg,
-                                                      isLast: isLast,
-                                                    );
-                                                  },
-                                                ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const SizedBox(height: 10),
-                              if (_attachedImages.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 8),
-                                  child: SizedBox(
-                                    height: 80,
-                                    child: ListView.builder(
-                                      scrollDirection: Axis.horizontal,
-                                      itemCount: _attachedImages.length,
-                                      itemBuilder: (context, index) => Padding(
-                                        padding:
-                                            const EdgeInsets.only(right: 8),
-                                        child: Stack(
-                                          clipBehavior: Clip.none,
-                                          children: [
-                                            ClipRRect(
-                                              borderRadius:
-                                                  BorderRadius.circular(999),
-                                              child: Image.file(
-                                                File(_attachedImages[index]),
-                                                width: 72,
-                                                height: 72,
-                                                fit: BoxFit.cover,
-                                                cacheWidth: 72,
-                                                cacheHeight: 72,
-                                              ),
-                                            ),
-                                            Positioned(
-                                              top: -6,
-                                              right: -6,
-                                              child: GestureDetector(
-                                                onTap: () =>
-                                                    _removeImage(index),
-                                                child: Container(
-                                                  width: 22,
-                                                  height: 22,
-                                                  decoration: BoxDecoration(
-                                                    color: nomad.surface,
-                                                    shape: BoxShape.circle,
-                                                    border: Border.all(
-                                                      color: nomad.border,
-                                                      width: 1,
-                                                    ),
-                                                  ),
-                                                  child: Icon(
-                                                    Icons.close,
-                                                    size: 14,
-                                                    color: nomad.textSecondary,
-                                                  ),
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              if (_isCreationMode && !_isAddMenuOpen)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 8),
-                                  child: _CreationChip(
-                                      onDismiss: _exitCreationMode,
-                                      creationType: _creationType),
-                                ),
-                              if (_isLiveMode && _liveTranscript.isNotEmpty)
-                                BouncyFadeSlide(
-                                  duration: const Duration(milliseconds: 280),
-                                  slideOffset: 14,
-                                  child: Padding(
-                                    padding: const EdgeInsets.only(bottom: 20),
-                                    child: Container(
-                                      constraints: const BoxConstraints(
-                                        minHeight: 40,
-                                        maxHeight: 100,
-                                      ),
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 16, vertical: 10),
-                                      decoration: BoxDecoration(
-                                        color: nomad.surface
-                                            .withValues(alpha: 0.92),
-                                        borderRadius:
-                                            BorderRadius.circular(999),
-                                        border: Border.all(
-                                            color: nomad.border, width: 1),
-                                      ),
-                                      child: Text(
-                                        _liveTranscript,
-                                        style: textTheme.bodyMedium,
-                                        maxLines: 3,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                          ValueListenableBuilder<double>(
-                            valueListenable: _soundLevel,
-                            builder: (context, level, _) => LayoutBuilder(
-                              builder: (context, constraints) {
-                                final rawLevel = level.clamp(-50.0, 50.0);
-                                final normalizedLevel = math
-                                    .max(0.0, (rawLevel + 30.0) / 50.0)
-                                    .clamp(0.0, 1.0);
-
-                                final liveMaxWidth =
-                                    constraints.maxWidth - 88.0;
-                                final audioWidth = _isLiveMuted
-                                    ? 44.0
-                                    : 44.0 +
-                                        (normalizedLevel *
-                                            (liveMaxWidth - 44.0));
-
-                                return AnimatedBuilder(
-                                  animation: _modeT,
-                                  builder: (context, _) {
-                                    final mt = _modeT.value;
-                                    // The chat<->live morph is driven by _modeT;
-                                    // the audio-reactive width is smoothed quickly
-                                    // so the pill stays snappy while listening.
-                                    return TweenAnimationBuilder<double>(
-                                      duration:
-                                          const Duration(milliseconds: 120),
-                                      curve: Curves.easeOut,
-                                      tween: Tween<double>(
-                                          begin: audioWidth, end: audioWidth),
-                                      builder: (context, smoothAudio, __) {
-                                        final currentWidth =
-                                            constraints.maxWidth +
-                                                (smoothAudio -
-                                                        constraints.maxWidth) *
-                                                    mt;
-                                        final btnT = ((mt - 0.35) / 0.65)
-                                            .clamp(0.0, 1.0);
-
-                                        final circleLeft =
-                                            (constraints.maxWidth -
-                                                    currentWidth) /
-                                                2;
-
-                                        return SizedBox(
-                                          width: constraints.maxWidth,
-                                          child: Stack(
-                                            alignment: Alignment.center,
-                                            clipBehavior: Clip.none,
-                                            children: [
-                                              SizedBox(
-                                                width: currentWidth,
-                                                child: AnimatedContainer(
-                                                  duration: const Duration(
-                                                      milliseconds: 460),
-                                                  curve: Curves.easeOutCubic,
-                                                  height:
-                                                      _isLiveMode ? 44.0 : null,
-                                                  constraints: _isLiveMode
-                                                      ? null
-                                                      : const BoxConstraints(
-                                                          minHeight: 44,
-                                                          maxHeight: 140),
-                                                  decoration: _isLiveMode
-                                                      ? BoxDecoration(
-                                                          borderRadius:
-                                                              BorderRadius
-                                                                  .circular(
-                                                                      100),
-                                                          gradient:
-                                                              const LinearGradient(
-                                                            begin: Alignment
-                                                                .topCenter,
-                                                            end: Alignment
-                                                                .bottomCenter,
-                                                            colors: [
-                                                              Colors.white,
-                                                              Color(0xFF86A8E7)
-                                                            ],
-                                                          ),
-                                                        )
-                                                      : BoxDecoration(
-                                                          color: nomad.surface
-                                                              .withValues(
-                                                                  alpha: 0.92),
-                                                          borderRadius:
-                                                              BorderRadius
-                                                                  .circular(
-                                                                      100),
-                                                          border: Border.all(
-                                                              color:
-                                                                  nomad.border,
-                                                              width: 1),
-                                                        ),
-                                                  clipBehavior: Clip.antiAlias,
-                                                  child: AnimatedBuilder(
-                                                    animation: _modeController,
-                                                    builder: (context, child) {
-                                                      final v =
-                                                          _modeController.value;
-                                                      final cv = (1.0 - v / 0.5)
-                                                          .clamp(0.0, 1.0);
-                                                      return Opacity(
-                                                        opacity: Curves.easeOut
-                                                            .transform(cv),
-                                                        child: Transform.scale(
-                                                          scale:
-                                                              0.95 + 0.05 * cv,
-                                                          alignment: Alignment
-                                                              .centerLeft,
-                                                          child: child,
-                                                        ),
+                Positioned(
+                  left: contentInset,
+                  right: contentInset,
+                  top: headerTop + 64,
+                  bottom: inputBottom,
+                  child: Row(
+                    key: const ValueKey('chat-column'),
+                    children: [
+                      Expanded(
+                        flex: 1,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  Positioned.fill(
+                                    child: Consumer(
+                                      builder: (context, ref, _) {
+                                        final messages =
+                                            ref.watch(chatMessagesProvider);
+                                        return AnimatedOpacity(
+                                          opacity: _isClearingChat ? 0.0 : 1.0,
+                                          duration:
+                                              const Duration(milliseconds: 180),
+                                          child: _AdaptiveShaderMask(
+                                            shaderCallback: (rect) {
+                                              return const LinearGradient(
+                                                begin: Alignment.topCenter,
+                                                end: Alignment.bottomCenter,
+                                                colors: [
+                                                  Colors.transparent,
+                                                  Colors.white,
+                                                  Colors.white,
+                                                  Colors.transparent,
+                                                ],
+                                                stops: [
+                                                  0.0,
+                                                  0.06,
+                                                  0.94,
+                                                  1.0,
+                                                ],
+                                              ).createShader(rect);
+                                            },
+                                            blendMode: BlendMode.dstIn,
+                                            child: messages.isEmpty
+                                                ? _buildEmptyState(context)
+                                                : ListView.builder(
+                                                    controller:
+                                                        _scrollController,
+                                                    padding:
+                                                        const EdgeInsets.only(
+                                                            top: 8),
+                                                    itemCount: messages.length +
+                                                        (_isStreaming ? 1 : 0),
+                                                    scrollCacheExtent:
+                                                        const ScrollCacheExtent
+                                                            .pixels(600),
+                                                    addAutomaticKeepAlives:
+                                                        false,
+                                                    addRepaintBoundaries: true,
+                                                    physics:
+                                                        const BouncingScrollPhysics(),
+                                                    itemBuilder:
+                                                        (context, index) {
+                                                      if (index ==
+                                                          messages.length) {
+                                                        return _buildStreamingBubble(
+                                                            true);
+                                                      }
+                                                      final msg =
+                                                          messages[index];
+                                                      final isLast = index ==
+                                                              messages.length -
+                                                                  1 &&
+                                                          !_isStreaming;
+                                                      return _buildBubble(
+                                                        msg,
+                                                        isLast: isLast,
                                                       );
                                                     },
-                                                    child: IgnorePointer(
-                                                      ignoring: _isLiveMode,
-                                                      child: Padding(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .only(
-                                                                left: 6,
-                                                                right: 6,
-                                                                top: 6,
-                                                                bottom: 6),
-                                                        child: Row(
-                                                          crossAxisAlignment:
-                                                              CrossAxisAlignment
-                                                                  .center,
-                                                          children: [
-                                                            _ComposerAddButton(
-                                                              isOpen: _isAddMenuOpen ||
-                                                                  _isCreationMode,
-                                                              onTap: _isCreationMode
-                                                                  ? _exitCreationMode
-                                                                  : _toggleAddMenu,
-                                                            ),
-                                                            const SizedBox(
-                                                                width: 10),
-                                                            Expanded(
-                                                              child: Theme(
-                                                                data: Theme.of(
-                                                                        context)
-                                                                    .copyWith(
-                                                                  inputDecorationTheme:
-                                                                      const InputDecorationTheme(
-                                                                    border:
-                                                                        InputBorder
-                                                                            .none,
-                                                                    enabledBorder:
-                                                                        InputBorder
-                                                                            .none,
-                                                                    focusedBorder:
-                                                                        InputBorder
-                                                                            .none,
-                                                                  ),
-                                                                ),
-                                                                child:
-                                                                    TextField(
-                                                                  controller:
-                                                                      _controller,
-                                                                  focusNode:
-                                                                      _focusNode,
-                                                                  minLines: 1,
-                                                                  maxLines: 4,
-                                                                  keyboardType:
-                                                                      TextInputType
-                                                                          .multiline,
-                                                                  textInputAction:
-                                                                      TextInputAction
-                                                                          .newline,
-                                                                  style: textTheme
-                                                                      .bodyMedium,
-                                                                  decoration:
-                                                                      InputDecoration(
-                                                                    hintText: _isCreationMode
-                                                                        ? 'Describe your creation…'
-                                                                        : 'Ask anything',
-                                                                    hintStyle: textTheme
-                                                                        .bodyMedium
-                                                                        ?.copyWith(
-                                                                            color:
-                                                                                nomad.textSecondary),
-                                                                    filled:
-                                                                        false,
-                                                                    fillColor:
-                                                                        Colors
-                                                                            .transparent,
-                                                                    border:
-                                                                        InputBorder
-                                                                            .none,
-                                                                    enabledBorder:
-                                                                        InputBorder
-                                                                            .none,
-                                                                    focusedBorder:
-                                                                        InputBorder
-                                                                            .none,
-                                                                    errorBorder:
-                                                                        InputBorder
-                                                                            .none,
-                                                                    disabledBorder:
-                                                                        InputBorder
-                                                                            .none,
-                                                                    contentPadding: const EdgeInsets
-                                                                        .symmetric(
-                                                                        vertical:
-                                                                            10),
-                                                                    isDense:
-                                                                        true,
-                                                                    counterText:
-                                                                        '',
-                                                                  ),
-                                                                  onSubmitted:
-                                                                      (_) =>
-                                                                          _sendMessage(),
-                                                                ),
-                                                              ),
-                                                            ),
-                                                            if (_searchEnabled &&
-                                                                !_isCreationMode)
-                                                              _ComposerIconButton(
-                                                                tooltip:
-                                                                    'Web search on',
-                                                                icon: Icons
-                                                                    .language_rounded,
-                                                                isActive: true,
-                                                                onTap: () {
-                                                                  HapticFeedback
-                                                                      .lightImpact();
-                                                                  setState(() =>
-                                                                      _searchEnabled =
-                                                                          false);
-                                                                },
-                                                              ),
-                                                            if (_searchEnabled &&
-                                                                !_isCreationMode)
-                                                              const SizedBox(
-                                                                  width: 6),
-                                                            if (!_isCreationMode)
-                                                              _ComposerIconButton(
-                                                                tooltip:
-                                                                    'Nomad Voice',
-                                                                svgAsset:
-                                                                    'assets/images/mic.svg',
-                                                                onTap: () {
-                                                                  HapticFeedback
-                                                                      .mediumImpact();
-                                                                  _toggleLiveMode();
-                                                                },
-                                                              ),
-                                                            if (!_isCreationMode)
-                                                              const SizedBox(
-                                                                  width: 6),
-                                                            NomadSendButton(
-                                                              onTap:
-                                                                  _sendMessage,
-                                                              onStop:
-                                                                  _stopGeneration,
-                                                              isEnabled: _hasText ||
-                                                                  _attachedImages
-                                                                      .isNotEmpty,
-                                                              isStreaming:
-                                                                  _isStreaming,
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      ),
-                                                    ),
                                                   ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const SizedBox(height: 10),
+                                if (_attachedImages.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: SizedBox(
+                                      height: 80,
+                                      child: ListView.builder(
+                                        scrollDirection: Axis.horizontal,
+                                        itemCount: _attachedImages.length,
+                                        itemBuilder: (context, index) =>
+                                            Padding(
+                                          padding:
+                                              const EdgeInsets.only(right: 8),
+                                          child: Stack(
+                                            clipBehavior: Clip.none,
+                                            children: [
+                                              ClipRRect(
+                                                borderRadius:
+                                                    BorderRadius.circular(999),
+                                                child: Image.file(
+                                                  File(_attachedImages[index]),
+                                                  width: 72,
+                                                  height: 72,
+                                                  fit: BoxFit.cover,
+                                                  cacheWidth: 72,
+                                                  cacheHeight: 72,
                                                 ),
                                               ),
                                               Positioned(
-                                                left: circleLeft - 44,
-                                                top: 0,
-                                                bottom: 0,
-                                                child: IgnorePointer(
-                                                  ignoring: !_isLiveMode,
-                                                  child: Opacity(
-                                                    opacity: btnT,
-                                                    child: Transform.scale(
-                                                      scale: 0.7 + 0.3 * btnT,
-                                                      child: SizedBox(
-                                                        width: 34,
-                                                        child: Center(
-                                                          child:
-                                                              _ComposerIconButton(
-                                                            tooltip:
-                                                                _isLiveMuted
-                                                                    ? 'Unmute'
-                                                                    : 'Mute',
-                                                            svgAsset:
-                                                                'assets/images/mic.svg',
-                                                            isActive:
-                                                                _isLiveMuted,
-                                                            onTap:
-                                                                _toggleLiveMute,
-                                                          ),
-                                                        ),
+                                                top: -6,
+                                                right: -6,
+                                                child: GestureDetector(
+                                                  onTap: () =>
+                                                      _removeImage(index),
+                                                  child: Container(
+                                                    width: 22,
+                                                    height: 22,
+                                                    decoration: BoxDecoration(
+                                                      color: nomad.surface,
+                                                      shape: BoxShape.circle,
+                                                      border: Border.all(
+                                                        color: nomad.border,
+                                                        width: 1,
                                                       ),
                                                     ),
-                                                  ),
-                                                ),
-                                              ),
-                                              Positioned(
-                                                right: circleLeft - 40,
-                                                top: 0,
-                                                bottom: 0,
-                                                child: IgnorePointer(
-                                                  ignoring: !_isLiveMode,
-                                                  child: Opacity(
-                                                    opacity: btnT,
-                                                    child: Transform.scale(
-                                                      scale: 0.7 + 0.3 * btnT,
-                                                      child: SizedBox(
-                                                        width: 34,
-                                                        child: Center(
-                                                          child:
-                                                              _ComposerAddButton(
-                                                            isOpen: true,
-                                                            onTap:
-                                                                _exitLiveMode,
-                                                          ),
-                                                        ),
-                                                      ),
+                                                    child: Icon(
+                                                      Icons.close,
+                                                      size: 14,
+                                                      color:
+                                                          nomad.textSecondary,
                                                     ),
                                                   ),
                                                 ),
                                               ),
                                             ],
                                           ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                if (_isCreationMode && !_isAddMenuOpen)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 8),
+                                    child: _CreationChip(
+                                        onDismiss: _exitCreationMode,
+                                        creationType: _creationType),
+                                  ),
+                                if (_isLiveMode)
+                                  VoiceStatusPanel(
+                                    session: _voice,
+                                    modelLoading: _isModelLoading,
+                                    searchEnabled: _searchEnabled,
+                                    onSearchChanged: (value) =>
+                                        setState(() => _searchEnabled = value),
+                                    onTypeInstead: _exitLiveMode,
+                                    onChooseModel: () =>
+                                        context.push('/settings/models'),
+                                    onOpenSettings: _openVoiceSettings,
+                                  ),
+                              ],
+                            ),
+                            CompositedTransformTarget(
+                              link: _composerLink,
+                              child: ValueListenableBuilder<double>(
+                                valueListenable: _voice.soundLevel,
+                                builder: (context, level, _) => LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final rawLevel = level.clamp(-50.0, 50.0);
+                                    final normalizedLevel = math
+                                        .max(0.0, (rawLevel + 30.0) / 50.0)
+                                        .clamp(0.0, 1.0);
+
+                                    final liveMaxWidth =
+                                        constraints.maxWidth - 120.0;
+                                    final audioWidth = _isLiveMuted
+                                        ? 48.0
+                                        : 48.0 +
+                                            (normalizedLevel *
+                                                (liveMaxWidth - 48.0));
+
+                                    return AnimatedBuilder(
+                                      animation: _modeT,
+                                      builder: (context, _) {
+                                        final mt = _modeT.value;
+                                        // The chat<->live morph is driven by _modeT;
+                                        // the audio-reactive width is smoothed quickly
+                                        // so the pill stays snappy while listening.
+                                        return TweenAnimationBuilder<double>(
+                                          duration:
+                                              const Duration(milliseconds: 120),
+                                          curve: Curves.easeOut,
+                                          tween: Tween<double>(
+                                              begin: audioWidth,
+                                              end: audioWidth),
+                                          builder: (context, smoothAudio, __) {
+                                            final currentWidth = constraints
+                                                    .maxWidth +
+                                                (smoothAudio -
+                                                        constraints.maxWidth) *
+                                                    mt;
+                                            final btnT = ((mt - 0.35) / 0.65)
+                                                .clamp(0.0, 1.0);
+
+                                            final circleLeft =
+                                                (constraints.maxWidth -
+                                                        currentWidth) /
+                                                    2;
+
+                                            return SizedBox(
+                                              width: constraints.maxWidth,
+                                              child: Stack(
+                                                alignment: Alignment.center,
+                                                clipBehavior: Clip.none,
+                                                children: [
+                                                  SizedBox(
+                                                    width: currentWidth,
+                                                    child: AnimatedContainer(
+                                                      key: const ValueKey(
+                                                          'chat-composer'),
+                                                      duration: const Duration(
+                                                          milliseconds: 460),
+                                                      curve:
+                                                          Curves.easeOutCubic,
+                                                      height: _isLiveMode
+                                                          ? 48.0
+                                                          : null,
+                                                      constraints: _isLiveMode
+                                                          ? null
+                                                          : const BoxConstraints(
+                                                              minHeight: 60,
+                                                              maxHeight: 164),
+                                                      decoration: _isLiveMode
+                                                          ? BoxDecoration(
+                                                              borderRadius:
+                                                                  BorderRadius
+                                                                      .circular(
+                                                                          100),
+                                                              gradient:
+                                                                  const LinearGradient(
+                                                                begin: Alignment
+                                                                    .topCenter,
+                                                                end: Alignment
+                                                                    .bottomCenter,
+                                                                colors: [
+                                                                  Colors.white,
+                                                                  Color(
+                                                                      0xFF86A8E7)
+                                                                ],
+                                                              ),
+                                                            )
+                                                          : BoxDecoration(
+                                                              color: nomad
+                                                                  .surface
+                                                                  .withValues(
+                                                                      alpha:
+                                                                          0.92),
+                                                              borderRadius:
+                                                                  BorderRadius.circular(
+                                                                      NomadRadii
+                                                                          .card),
+                                                              border: Border.all(
+                                                                  color: nomad
+                                                                      .border,
+                                                                  width: 1),
+                                                            ),
+                                                      clipBehavior:
+                                                          Clip.antiAlias,
+                                                      child: _isLiveMode
+                                                          ? _buildLiveCenter()
+                                                          : OverflowBox(
+                                                              minWidth:
+                                                                  constraints
+                                                                      .maxWidth,
+                                                              maxWidth:
+                                                                  constraints
+                                                                      .maxWidth,
+                                                              fit: OverflowBoxFit
+                                                                  .deferToChild,
+                                                              child:
+                                                                  AnimatedBuilder(
+                                                                animation:
+                                                                    _modeController,
+                                                                builder:
+                                                                    (context,
+                                                                        child) {
+                                                                  final v =
+                                                                      _modeController
+                                                                          .value;
+                                                                  final cv = (1.0 -
+                                                                          v /
+                                                                              0.5)
+                                                                      .clamp(
+                                                                          0.0,
+                                                                          1.0);
+                                                                  return Opacity(
+                                                                    opacity: Curves
+                                                                        .easeOut
+                                                                        .transform(
+                                                                            cv),
+                                                                    child: Transform
+                                                                        .scale(
+                                                                      scale: 0.95 +
+                                                                          0.05 *
+                                                                              cv,
+                                                                      alignment:
+                                                                          Alignment
+                                                                              .centerLeft,
+                                                                      child:
+                                                                          child,
+                                                                    ),
+                                                                  );
+                                                                },
+                                                                child:
+                                                                    ExcludeFocus(
+                                                                  excluding:
+                                                                      _isLiveMode,
+                                                                  child:
+                                                                      IgnorePointer(
+                                                                    ignoring:
+                                                                        _isLiveMode,
+                                                                    child:
+                                                                        Padding(
+                                                                      padding: const EdgeInsets.only(
+                                                                          left:
+                                                                              6,
+                                                                          right:
+                                                                              6,
+                                                                          top:
+                                                                              6,
+                                                                          bottom:
+                                                                              6),
+                                                                      child:
+                                                                          Row(
+                                                                        crossAxisAlignment:
+                                                                            CrossAxisAlignment.center,
+                                                                        children: [
+                                                                          _ComposerAddButton(
+                                                                            isOpen:
+                                                                                _isAddMenuOpen || _isCreationMode,
+                                                                            onTap: _isCreationMode
+                                                                                ? _exitCreationMode
+                                                                                : _toggleAddMenu,
+                                                                          ),
+                                                                          const SizedBox(
+                                                                              width: 10),
+                                                                          Expanded(
+                                                                            child:
+                                                                                Theme(
+                                                                              data: Theme.of(context).copyWith(
+                                                                                inputDecorationTheme: const InputDecorationTheme(
+                                                                                  border: InputBorder.none,
+                                                                                  enabledBorder: InputBorder.none,
+                                                                                  focusedBorder: InputBorder.none,
+                                                                                ),
+                                                                              ),
+                                                                              child: TextField(
+                                                                                controller: _controller,
+                                                                                focusNode: _focusNode,
+                                                                                minLines: 1,
+                                                                                maxLines: 4,
+                                                                                keyboardType: TextInputType.multiline,
+                                                                                textInputAction: TextInputAction.newline,
+                                                                                style: textTheme.bodyMedium,
+                                                                                decoration: InputDecoration(
+                                                                                  hintText: _isCreationMode ? 'Describe your creation…' : 'Ask anything',
+                                                                                  hintStyle: textTheme.bodyMedium?.copyWith(color: nomad.textSecondary),
+                                                                                  filled: false,
+                                                                                  fillColor: Colors.transparent,
+                                                                                  border: InputBorder.none,
+                                                                                  enabledBorder: InputBorder.none,
+                                                                                  focusedBorder: InputBorder.none,
+                                                                                  errorBorder: InputBorder.none,
+                                                                                  disabledBorder: InputBorder.none,
+                                                                                  contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                                                                                  isDense: true,
+                                                                                  counterText: '',
+                                                                                ),
+                                                                                onSubmitted: (_) => _sendMessage(),
+                                                                              ),
+                                                                            ),
+                                                                          ),
+                                                                          if (_searchEnabled &&
+                                                                              !_isCreationMode)
+                                                                            _ComposerIconButton(
+                                                                              tooltip: 'Web search on',
+                                                                              icon: Icons.language_rounded,
+                                                                              isActive: true,
+                                                                              onTap: () {
+                                                                                HapticFeedback.lightImpact();
+                                                                                setState(() => _searchEnabled = false);
+                                                                              },
+                                                                            ),
+                                                                          if (_searchEnabled &&
+                                                                              !_isCreationMode)
+                                                                            const SizedBox(width: 6),
+                                                                          if (!_isCreationMode)
+                                                                            _ComposerIconButton(
+                                                                              tooltip: 'Nomad Voice',
+                                                                              svgAsset: 'assets/images/mic.svg',
+                                                                              onTap: () {
+                                                                                HapticFeedback.mediumImpact();
+                                                                                _toggleLiveMode();
+                                                                              },
+                                                                            ),
+                                                                          if (!_isCreationMode)
+                                                                            const SizedBox(width: 6),
+                                                                          NomadSendButton(
+                                                                            onTap:
+                                                                                _sendMessage,
+                                                                            onStop:
+                                                                                _stopGeneration,
+                                                                            isEnabled:
+                                                                                _hasText || _attachedImages.isNotEmpty,
+                                                                            isStreaming:
+                                                                                _isStreaming,
+                                                                          ),
+                                                                        ],
+                                                                      ),
+                                                                    ),
+                                                                  ),
+                                                                ),
+                                                              ),
+                                                            ),
+                                                    ),
+                                                  ),
+                                                  Positioned(
+                                                    left: circleLeft - 60,
+                                                    top: 0,
+                                                    bottom: 0,
+                                                    child: IgnorePointer(
+                                                      ignoring: !_isLiveMode,
+                                                      child: ExcludeFocus(
+                                                        excluding: !_isLiveMode,
+                                                        child: Opacity(
+                                                          opacity: btnT,
+                                                          child:
+                                                              Transform.scale(
+                                                            scale: 0.7 +
+                                                                0.3 * btnT,
+                                                            child: SizedBox(
+                                                              width: 48,
+                                                              child: Center(
+                                                                child:
+                                                                    _ComposerIconButton(
+                                                                  tooltip: _isLiveMuted
+                                                                      ? 'Resume voice'
+                                                                      : 'Pause voice',
+                                                                  svgAsset:
+                                                                      'assets/images/mic.svg',
+                                                                  isActive:
+                                                                      _isLiveMuted,
+                                                                  onTap:
+                                                                      _toggleLiveMute,
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  Positioned(
+                                                    right: circleLeft - 60,
+                                                    top: 0,
+                                                    bottom: 0,
+                                                    child: IgnorePointer(
+                                                      ignoring: !_isLiveMode,
+                                                      child: ExcludeFocus(
+                                                        excluding: !_isLiveMode,
+                                                        child: Opacity(
+                                                          opacity: btnT,
+                                                          child:
+                                                              Transform.scale(
+                                                            scale: 0.7 +
+                                                                0.3 * btnT,
+                                                            child: SizedBox(
+                                                              width: 48,
+                                                              child: Center(
+                                                                child:
+                                                                    _ComposerIconButton(
+                                                                  tooltip:
+                                                                      'End voice',
+                                                                  icon: Icons
+                                                                      .close_rounded,
+                                                                  onTap:
+                                                                      _exitLiveMode,
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            );
+                                          },
                                         );
                                       },
                                     );
                                   },
-                                );
-                              },
+                                ),
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (_isModelSelectorExpanded || _isModelSelectorClosing)
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: IgnorePointer(
+                      child: Container(
+                        color: nomad.background.withValues(alpha: 0.6),
                       ),
                     ),
-                  ],
-                ),
-              ),
-              if (_isModelSelectorExpanded || _isModelSelectorClosing)
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: IgnorePointer(
-                    child: Container(
-                      color: nomad.background.withValues(alpha: 0.6),
+                  ),
+                if (_isAddMenuOpen || _isAddMenuClosing)
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: IgnorePointer(
+                      child: Container(
+                        color: nomad.background.withValues(alpha: 0.6),
+                      ),
                     ),
                   ),
-                ),
-              if (_isAddMenuOpen || _isAddMenuClosing)
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: IgnorePointer(
-                    child: Container(
-                      color: nomad.background.withValues(alpha: 0.6),
+                if (_isAddMenuOpen || _isAddMenuClosing)
+                  Positioned(
+                    left: contentInset,
+                    right: contentInset,
+                    bottom: inputBottom,
+                    child: CompositedTransformFollower(
+                      link: _composerLink,
+                      showWhenUnlinked: false,
+                      targetAnchor: Alignment.topLeft,
+                      followerAnchor: Alignment.bottomLeft,
+                      offset: const Offset(0, -12),
+                      child: _AddMenuPanel(
+                        isOpen: _isAddMenuOpen,
+                        onCloseComplete: () {
+                          if (mounted) {
+                            setState(() => _isAddMenuClosing = false);
+                          }
+                        },
+                        onPickFile: () {
+                          _closeAddMenu();
+                          _pickImages();
+                        },
+                        onSelectCreationType: (type) =>
+                            _enterCreationMode(type),
+                        searchEnabled: _searchEnabled,
+                        onToggleSearch: () {
+                          HapticFeedback.lightImpact();
+                          setState(() => _searchEnabled = !_searchEnabled);
+                          _closeAddMenu();
+                        },
+                        isCreationMode: _isCreationMode,
+                      ),
                     ),
                   ),
-                ),
-              if (_isAddMenuOpen || _isAddMenuClosing)
                 Positioned(
-                  left: 20,
-                  right: 20,
-                  bottom: inputBottom + 56,
-                  child: _AddMenuPanel(
-                    isOpen: _isAddMenuOpen,
-                    onCloseComplete: () {
-                      if (mounted) {
-                        setState(() => _isAddMenuClosing = false);
+                  left: contentInset,
+                  top: headerTop,
+                  child: BouncyTap(
+                    tooltip: AppLocalizations.of(context)!.chatHistory,
+                    onTap: () {
+                      if (context.isDesktop) {
+                        ref.read(sidebarOpenProvider.notifier).toggle();
+                      } else {
+                        context.push('/history');
                       }
                     },
-                    onPickFile: () {
-                      _closeAddMenu();
-                      _pickImages();
-                    },
-                    onSelectCreationType: (type) => _enterCreationMode(type),
-                    searchEnabled: _searchEnabled,
-                    onToggleSearch: () {
-                      HapticFeedback.lightImpact();
-                      setState(() => _searchEnabled = !_searchEnabled);
-                      _closeAddMenu();
-                    },
-                    isCreationMode: _isCreationMode,
-                  ),
-                ),
-              Positioned(
-                left: 20,
-                top: topPadding + 48,
-                child: Semantics(
-                  label: AppLocalizations.of(context)!.chatHistory,
-                  button: true,
-                  child: Tooltip(
-                    message: AppLocalizations.of(context)!.chatHistory,
-                    child: GestureDetector(
-                      onTap: () {
-                        if (context.isDesktop) {
-                          ref.read(sidebarOpenProvider.notifier).toggle();
-                        } else {
-                          context.push('/history');
-                        }
-                      },
-                      behavior: HitTestBehavior.opaque,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 5,
+                    child: SizedBox(
+                      width: 48,
+                      height: 48,
+                      child: Center(
+                          child: SvgPicture.asset(
+                        'assets/images/menu-02.svg',
+                        width: 22,
+                        height: 22,
+                        colorFilter: ColorFilter.mode(
+                          nomad.textPrimary,
+                          BlendMode.srcIn,
                         ),
-                        child: SvgPicture.asset(
-                          'assets/images/menu-02.svg',
-                          width: 22,
-                          height: 22,
-                          colorFilter: ColorFilter.mode(
-                            nomad.textPrimary,
-                            BlendMode.srcIn,
-                          ),
-                        ),
-                      ),
+                      )),
                     ),
                   ),
                 ),
-              ),
-              Consumer(
-                builder: (context, ref, child) {
-                  final selectedModel = ref.watch(selectedModelProvider);
-                  final downloadedModels = ref
-                      .watch(downloadProvider)
-                      .where((m) => m.downloaded && !m.id.contains('creative'))
-                      .toList();
-                  final modelName = selectedModel?.name ?? '';
+                Consumer(
+                  builder: (context, ref, child) {
+                    final selectedModel = ref.watch(selectedModelProvider);
+                    final downloadedModels = ref
+                        .watch(downloadProvider)
+                        .where(
+                            (m) => m.downloaded && !m.id.contains('creative'))
+                        .toList();
+                    final modelName = selectedModel?.name ?? '';
 
-                  String suffix = '';
-                  if (modelName.toLowerCase().contains('nano')) {
-                    suffix = ' Nano';
-                  } else if (modelName.toLowerCase().contains('lite')) {
-                    suffix = ' Lite';
-                  } else if (modelName.toLowerCase().contains('creative')) {
-                    suffix = ' Creative';
-                  } else if (modelName.toLowerCase().contains('steady')) {
-                    suffix = ' Steady';
-                  } else if (modelName.toLowerCase().contains('smart')) {
-                    suffix = ' Smart';
-                  } else if (modelName.toLowerCase().contains('pro')) {
-                    suffix = ' Pro';
-                  }
+                    String suffix = '';
+                    if (modelName.toLowerCase().contains('nano')) {
+                      suffix = ' Nano';
+                    } else if (modelName.toLowerCase().contains('lite')) {
+                      suffix = ' Lite';
+                    } else if (modelName.toLowerCase().contains('creative')) {
+                      suffix = ' Creative';
+                    } else if (modelName.toLowerCase().contains('steady')) {
+                      suffix = ' Steady';
+                    } else if (modelName.toLowerCase().contains('smart')) {
+                      suffix = ' Smart';
+                    } else if (modelName.toLowerCase().contains('pro')) {
+                      suffix = ' Pro';
+                    }
 
-                  final hasMultiple = downloadedModels.length > 1;
+                    final hasMultiple = downloadedModels.length > 1;
 
-                  final otherModels = downloadedModels
-                      .where((m) => m.id != selectedModel?.id)
-                      .toList();
+                    final otherModels = downloadedModels
+                        .where((m) => m.id != selectedModel?.id)
+                        .toList();
 
-                  return Positioned(
-                    left: 72,
-                    top: topPadding + 52,
-                    child: BouncyTap(
-                      onTap: hasMultiple
-                          ? () {
-                              if (_isModelSelectorExpanded) {
-                                _closeModelSelector();
-                              } else {
-                                setState(() {
-                                  _isModelSelectorExpanded = true;
-                                  _isModelSelectorClosing = false;
-                                });
-                              }
-                            }
-                          : null,
-                      scaleDown: 0.95,
-                      child: Row(
+                    return Positioned(
+                      left: contentInset + 56,
+                      right: contentInset + 56,
+                      top: headerTop,
+                      child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text(
-                            'Nomad',
-                            style: textTheme.displaySmall?.copyWith(
-                              fontSize: 20,
+                          BouncyTap(
+                            tooltip: AppLocalizations.of(context)!.modelPicker,
+                            onTap: hasMultiple
+                                ? () {
+                                    if (_isModelSelectorExpanded) {
+                                      _closeModelSelector();
+                                    } else {
+                                      setState(() {
+                                        _isModelSelectorExpanded = true;
+                                        _isModelSelectorClosing = false;
+                                      });
+                                    }
+                                  }
+                                : () => context.push('/settings/models'),
+                            scaleDown: 0.95,
+                            child: Container(
+                              constraints: const BoxConstraints(minHeight: 48),
+                              alignment: Alignment.centerLeft,
+                              child: Row(children: [
+                                Flexible(
+                                    child: Text(
+                                  'Nomad$suffix',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textTheme.headlineMedium,
+                                )),
+                                if (hasMultiple) ...[
+                                  const SizedBox(width: 4),
+                                  Icon(
+                                    _isModelSelectorExpanded
+                                        ? Icons.keyboard_arrow_up_rounded
+                                        : Icons.keyboard_arrow_down_rounded,
+                                    size: 18,
+                                    color: nomad.textSecondary,
+                                  ),
+                                ],
+                              ]),
                             ),
                           ),
-                          Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  if (suffix.isNotEmpty)
-                                    Text(
-                                      suffix,
-                                      style: textTheme.displaySmall?.copyWith(
-                                        fontSize: 20,
-                                        color: _isModelSelectorExpanded
-                                            ? nomad.textPrimary
-                                            : nomad.textSecondary,
-                                      ),
-                                    ),
-                                  if (hasMultiple) ...[
-                                    const SizedBox(width: 4),
-                                    Icon(
-                                      _isModelSelectorExpanded
-                                          ? Icons.keyboard_arrow_up_rounded
-                                          : Icons.keyboard_arrow_down_rounded,
-                                      size: 18,
-                                      color: nomad.textSecondary,
-                                    ),
-                                  ],
-                                ],
-                              ),
-                              if ((_isModelSelectorExpanded ||
-                                      _isModelSelectorClosing) &&
-                                  otherModels.isNotEmpty)
-                                _ModelPickerDropdown(
-                                  models: otherModels,
-                                  isOpen: _isModelSelectorExpanded,
-                                  onCloseComplete: () {
-                                    if (mounted) {
-                                      setState(() =>
-                                          _isModelSelectorClosing = false);
-                                    }
-                                  },
-                                  onSelect: (model) {
-                                    ref
-                                        .read(selectedModelIdProvider.notifier)
-                                        .select(model.id);
-                                    _closeModelSelector();
-                                  },
-                                ),
-                            ],
-                          ),
+                          if ((_isModelSelectorExpanded ||
+                                  _isModelSelectorClosing) &&
+                              otherModels.isNotEmpty)
+                            _ModelPickerDropdown(
+                              models: otherModels,
+                              isOpen: _isModelSelectorExpanded,
+                              onCloseComplete: () {
+                                if (mounted) {
+                                  setState(
+                                      () => _isModelSelectorClosing = false);
+                                }
+                              },
+                              onSelect: (model) {
+                                ref
+                                    .read(selectedModelIdProvider.notifier)
+                                    .select(model.id);
+                                _closeModelSelector();
+                              },
+                            ),
                         ],
                       ),
-                    ),
-                  );
-                },
-              ),
-              if (ref.watch(chatMessagesProvider).isNotEmpty)
-                Positioned(
-                  right: 20,
-                  top: topPadding + 48,
-                  child: Semantics(
-                    label: AppLocalizations.of(context)!.newChat,
-                    button: true,
-                    child: Tooltip(
-                      message: AppLocalizations.of(context)!.newChat,
-                      child: _AnimatedPencilButton(onTap: _startNewChat),
-                    ),
-                  ),
+                    );
+                  },
                 ),
-            ],
-          ),
-        ),
+                if (ref.watch(chatMessagesProvider).isNotEmpty)
+                  Positioned(
+                    right: contentInset,
+                    top: headerTop,
+                    child: _AnimatedPencilButton(onTap: _startNewChat),
+                  ),
+              ],
+            ),
+          );
+        }),
       ),
     );
   }
@@ -1882,54 +1859,56 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       duration: NomadDurations.slow,
       slideOffset: 24,
       child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              greeting,
-              style: textTheme.displaySmall?.copyWith(
-                color: nomad.textPrimary,
-                fontWeight: FontWeight.w400,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                greeting,
+                style: textTheme.displaySmall?.copyWith(
+                  color: nomad.textPrimary,
+                ),
               ),
-            ),
-            const SizedBox(height: 32),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              alignment: WrapAlignment.center,
-              children: suggestions.map((s) {
-                return BouncyTap(
-                  onTap: () {
-                    _controller.text = s;
-                    setState(() => _hasText = true);
-                    _sendMessage();
-                  },
-                  scaleDown: 0.95,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: nomad.surface.withValues(alpha: 0.8),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(
-                        color: nomad.border,
-                        width: 1,
+              const SizedBox(height: 32),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                alignment: WrapAlignment.center,
+                children: suggestions.map((s) {
+                  return BouncyTap(
+                    onTap: () {
+                      _controller.text = s;
+                      setState(() => _hasText = true);
+                      _sendMessage();
+                    },
+                    scaleDown: 0.95,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: nomad.surface.withValues(alpha: 0.8),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: nomad.border,
+                          width: 1,
+                        ),
+                      ),
+                      child: Text(
+                        s,
+                        style: textTheme.bodySmall?.copyWith(
+                          color: nomad.textPrimary,
+                          fontWeight: FontWeight.w400,
+                        ),
                       ),
                     ),
-                    child: Text(
-                      s,
-                      style: textTheme.bodySmall?.copyWith(
-                        color: nomad.textPrimary,
-                        fontWeight: FontWeight.w400,
-                      ),
-                    ),
-                  ),
-                );
-              }).toList(),
-            ),
-          ],
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -2037,14 +2016,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: BouncyTap(
-                        onTap: () {
-                          final lastUserMsg = ref
-                              .read(chatMessagesProvider)
-                              .lastWhere((m) => m.fromUser, orElse: () => msg);
-                          _controller.text = lastUserMsg.text;
-                          ref.read(chatMessagesProvider.notifier).clear();
-                          _sendMessage();
-                        },
+                        onTap: _isStreaming ? null : () => _regenerate(msg),
                         child: Container(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 14,
@@ -2124,6 +2096,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   void _regenerate(ChatMessage msg) {
+    if (_isStreaming || ref.read(chatInferenceProvider).isGenerating) return;
     final messages = ref.read(chatMessagesProvider);
     final msgIndex = messages.indexOf(msg);
     if (msgIndex < 0) return;
@@ -2134,7 +2107,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (userMsgIndex < 0) return; // No user message to regenerate from
     final userMsg = earlierMessages[userMsgIndex];
 
-    ref.read(chatMessagesProvider.notifier).setMessages(earlierMessages);
+    ref
+        .read(chatMessagesProvider.notifier)
+        .setMessages(earlierMessages.sublist(0, userMsgIndex));
     _controller.text = userMsg.text;
     _controller.selection = TextSelection.fromPosition(
       TextPosition(offset: userMsg.text.length),
@@ -2162,6 +2137,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       child: Row(
         children: [
           BouncyTap(
+            tooltip: 'Copy message',
             onTap: () {
               Clipboard.setData(ClipboardData(text: msg.text));
               HapticFeedback.lightImpact();
@@ -2181,22 +2157,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               );
             },
             scaleDown: 0.9,
-            child: Padding(
-              padding: const EdgeInsets.all(6),
-              child: Icon(
+            child: SizedBox.square(
+              dimension: 48,
+              child: Center(
+                  child: Icon(
                 Icons.content_copy,
                 size: 18,
                 color: nomad.textPrimary,
-              ),
+              )),
             ),
           ),
           const SizedBox(width: 10),
           BouncyTap(
-            onTap: () => _regenerate(msg),
+            tooltip: 'Regenerate response',
+            onTap: _isStreaming ? null : () => _regenerate(msg),
             scaleDown: 0.9,
-            child: Padding(
-              padding: const EdgeInsets.all(6),
-              child: Icon(Icons.refresh, size: 18, color: nomad.textPrimary),
+            child: SizedBox.square(
+              dimension: 48,
+              child: Center(
+                  child:
+                      Icon(Icons.refresh, size: 18, color: nomad.textPrimary)),
             ),
           ),
           if (hasStats) ...[
@@ -2277,47 +2257,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         ),
       ),
     );
-  }
-}
-
-/// Tracks markdown code fences and model think tags as tokens arrive, avoiding
-/// rescanning the full response for every generated token.
-class _StreamingMarkupState {
-  static const _markers = ['```', '<think>', '</think>'];
-  static const _maxMarkerLength = 8;
-
-  String _pending = '';
-  bool _inCodeBlock = false;
-  int _thinkDepth = 0;
-
-  bool get isHidden => _inCodeBlock || _thinkDepth > 0;
-
-  void add(String token) {
-    _pending += token;
-    var offset = 0;
-
-    // Keep a short suffix so delimiters split across tokenizer chunks are
-    // matched on the next call.
-    final safeEnd = _pending.length - (_maxMarkerLength - 1);
-    while (offset < safeEnd) {
-      final marker = _markers.firstWhere(
-        (candidate) => _pending.startsWith(candidate, offset),
-        orElse: () => '',
-      );
-      if (marker.isEmpty) {
-        offset++;
-      } else {
-        if (marker == '```') {
-          _inCodeBlock = !_inCodeBlock;
-        } else if (marker == '<think>') {
-          _thinkDepth++;
-        } else if (_thinkDepth > 0) {
-          _thinkDepth--;
-        }
-        offset += marker.length;
-      }
-    }
-    _pending = _pending.substring(offset);
   }
 }
 
@@ -2409,32 +2348,29 @@ class _ComposerAddButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
-    return Tooltip(
-      message: isOpen ? 'Close' : 'Add',
-      child: BouncyTap(
-        onTap: onTap,
-        scaleDown: 0.86,
-        child: Container(
-          width: 34,
-          height: 34,
-          decoration: BoxDecoration(
-            color: isOpen
-                ? nomad.textPrimary.withValues(alpha: 0.08)
-                : Colors.transparent,
-            shape: BoxShape.circle,
-          ),
-          child: Center(
-            child: AnimatedRotation(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.linear,
-              turns: isOpen ? 0.125 : 0.0,
-              child: SvgPicture.asset(
-                'assets/images/plus.svg',
-                width: 26,
-                height: 26,
-                colorFilter:
-                    ColorFilter.mode(nomad.textPrimary, BlendMode.srcIn),
-              ),
+    return BouncyTap(
+      tooltip: isOpen ? 'Close' : 'Add',
+      onTap: onTap,
+      scaleDown: 0.86,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: isOpen
+              ? nomad.textPrimary.withValues(alpha: 0.08)
+              : Colors.transparent,
+          shape: BoxShape.circle,
+        ),
+        child: Center(
+          child: AnimatedRotation(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.linear,
+            turns: isOpen ? 0.125 : 0.0,
+            child: SvgPicture.asset(
+              'assets/images/plus.svg',
+              width: 26,
+              height: 26,
+              colorFilter: ColorFilter.mode(nomad.textPrimary, BlendMode.srcIn),
             ),
           ),
         ),
@@ -2978,35 +2914,33 @@ class _ComposerIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
-    return Tooltip(
-      message: tooltip,
-      child: BouncyTap(
-        onTap: onTap,
-        scaleDown: 0.86,
-        child: Container(
-          width: 34,
-          height: 34,
-          decoration: BoxDecoration(
-            color: isActive
-                ? nomad.textPrimary.withValues(alpha: 0.08)
-                : Colors.transparent,
-            shape: BoxShape.circle,
-          ),
-          child: Center(
-            child: svgAsset != null
-                ? SvgPicture.asset(
-                    svgAsset!,
-                    width: 26,
-                    height: 26,
-                    colorFilter:
-                        ColorFilter.mode(nomad.textPrimary, BlendMode.srcIn),
-                  )
-                : Icon(
-                    icon ?? Icons.circle,
-                    size: 25,
-                    color: nomad.textPrimary,
-                  ),
-          ),
+    return BouncyTap(
+      tooltip: tooltip,
+      onTap: onTap,
+      scaleDown: 0.86,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: isActive
+              ? nomad.textPrimary.withValues(alpha: 0.08)
+              : Colors.transparent,
+          shape: BoxShape.circle,
+        ),
+        child: Center(
+          child: svgAsset != null
+              ? SvgPicture.asset(
+                  svgAsset!,
+                  width: 26,
+                  height: 26,
+                  colorFilter:
+                      ColorFilter.mode(nomad.textPrimary, BlendMode.srcIn),
+                )
+              : Icon(
+                  icon ?? Icons.circle,
+                  size: 25,
+                  color: nomad.textPrimary,
+                ),
         ),
       ),
     );
@@ -3023,15 +2957,17 @@ class _AnimatedPencilButton extends StatelessWidget {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     return BouncyTap(
       onTap: onTap,
+      tooltip: AppLocalizations.of(context)!.newChat,
       scaleDown: 0.85,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        child: SvgPicture.asset(
+      child: SizedBox.square(
+        dimension: 48,
+        child: Center(
+            child: SvgPicture.asset(
           'assets/images/compose.svg',
-          width: 28,
-          height: 28,
+          width: 24,
+          height: 24,
           colorFilter: ColorFilter.mode(nomad.textPrimary, BlendMode.srcIn),
-        ),
+        )),
       ),
     );
   }
@@ -3061,8 +2997,9 @@ class _ThinkingProcessBlockState extends State<_ThinkingProcessBlock> {
         ? '${widget.content.substring(0, 150)}...'
         : widget.content;
 
-    return GestureDetector(
+    return BouncyTap(
       onTap: () => setState(() => _expanded = !_expanded),
+      scaleDown: 0.99,
       child: Opacity(
         opacity: _expanded ? 1.0 : 0.5,
         child: Container(
@@ -3070,7 +3007,7 @@ class _ThinkingProcessBlockState extends State<_ThinkingProcessBlock> {
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: widget.nomad.textSecondary.withValues(alpha: 0.04),
-            borderRadius: BorderRadius.circular(999),
+            borderRadius: BorderRadius.circular(NomadRadii.card),
             border: Border.all(
               color: widget.nomad.border.withValues(
                 alpha: _expanded ? 0.5 : 0.25,

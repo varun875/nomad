@@ -3,8 +3,10 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../services/performance_service.dart';
+import '../theme/nomad_theme.dart';
 
 class NomadDurations {
   static const Duration micro = Duration(milliseconds: 50);
@@ -64,11 +66,19 @@ class NomadRevealItem extends StatelessWidget {
   }
 }
 
+/// A pressable control that is disabled when both callbacks are null.
+/// Keyboard activation uses [onTap], or [onLongPress] when it is the only action.
 class BouncyTap extends StatefulWidget {
   final Widget child;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
   final double scaleDown;
+  final String? tooltip;
+
+  /// Replaces child semantics, defaulting to [tooltip] when provided.
+  final String? semanticLabel;
+  final bool? selected;
+  final BorderRadius borderRadius;
 
   const BouncyTap({
     super.key,
@@ -76,6 +86,12 @@ class BouncyTap extends StatefulWidget {
     this.onTap,
     this.onLongPress,
     this.scaleDown = 0.85,
+    this.tooltip,
+    this.semanticLabel,
+    this.selected,
+    this.borderRadius = const BorderRadius.all(
+      Radius.circular(NomadRadii.control),
+    ),
   });
 
   @override
@@ -85,6 +101,11 @@ class BouncyTap extends StatefulWidget {
 class _BouncyTapState extends State<BouncyTap>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
+  bool _disableAnimations = false;
+  bool _showFocusHighlight = false;
+  bool _showHoverHighlight = false;
+
+  bool get _enabled => widget.onTap != null || widget.onLongPress != null;
 
   @override
   void initState() {
@@ -96,13 +117,26 @@ class _BouncyTapState extends State<BouncyTap>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _disableAnimations = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    if (_disableAnimations) _controller.reset();
+  }
+
+  @override
+  void didUpdateWidget(covariant BouncyTap oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_enabled) _controller.reset();
+  }
+
+  @override
   void dispose() {
     _controller.dispose();
     super.dispose();
   }
 
   void _handleTapDown(TapDownDetails details) {
-    _controller.forward();
+    if (!_disableAnimations) _controller.forward();
   }
 
   void _handleTapUp(TapUpDetails details) {
@@ -113,27 +147,114 @@ class _BouncyTapState extends State<BouncyTap>
     _controller.reverse();
   }
 
+  void _activate() {
+    if (!_enabled) return;
+    if (!_disableAnimations) {
+      _controller.forward(from: 0).then((_) {
+        if (mounted) _controller.reverse();
+      });
+    }
+    (widget.onTap ?? widget.onLongPress)?.call();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: _handleTapDown,
-      onTapUp: _handleTapUp,
-      onTapCancel: _handleTapCancel,
+    final focused = _enabled && _showFocusHighlight;
+    final hovered = _enabled && _showHoverHighlight;
+    final color = Theme.of(context).colorScheme.primary;
+    final label = widget.semanticLabel ?? widget.tooltip;
+
+    Widget result = FocusableActionDetector(
+      enabled: _enabled,
+      mouseCursor:
+          _enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      onShowFocusHighlight: (value) =>
+          setState(() => _showFocusHighlight = value),
+      onShowHoverHighlight: (value) =>
+          setState(() => _showHoverHighlight = value),
+      shortcuts: const <ShortcutActivator, Intent>{
+        SingleActivator(LogicalKeyboardKey.enter, includeRepeats: false):
+            ActivateIntent(),
+        SingleActivator(
+          LogicalKeyboardKey.numpadEnter,
+          includeRepeats: false,
+        ): ActivateIntent(),
+        SingleActivator(LogicalKeyboardKey.space, includeRepeats: false):
+            ActivateIntent(),
+      },
+      actions: <Type, Action<Intent>>{
+        ActivateIntent: CallbackAction<ActivateIntent>(
+          onInvoke: (_) {
+            _activate();
+            return null;
+          },
+        ),
+      },
+      child: GestureDetector(
+        onTapDown: _enabled ? _handleTapDown : null,
+        onTapUp: _enabled ? _handleTapUp : null,
+        onTapCancel: _enabled ? _handleTapCancel : null,
+        onTap: widget.onTap,
+        onLongPress: widget.onLongPress,
+        excludeFromSemantics: true,
+        behavior: HitTestBehavior.opaque,
+        child: AnimatedBuilder(
+          animation: _controller,
+          builder: (context, child) {
+            final t = Curves.easeOut.transform(_controller.value);
+            final scale = 1.0 + (widget.scaleDown - 1.0) * t;
+            return Transform.scale(scale: scale, child: child);
+          },
+          child: ExcludeSemantics(
+            excluding: label != null,
+            child: DecoratedBox(
+              position: DecorationPosition.foreground,
+              decoration: ShapeDecoration(
+                color: hovered
+                    ? color.withValues(alpha: 0.06)
+                    : Colors.transparent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: widget.borderRadius,
+                  side: BorderSide(
+                    color: focused
+                        ? color
+                        : hovered
+                            ? color.withValues(alpha: 0.35)
+                            : Colors.transparent,
+                    width: focused ? 2 : 1,
+                    strokeAlign: BorderSide.strokeAlignOutside,
+                  ),
+                ),
+              ),
+              child: Opacity(
+                opacity: _enabled ? 1 : 0.5,
+                child: widget.child,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (widget.tooltip != null) {
+      result = Tooltip(
+        message: widget.tooltip!,
+        excludeFromSemantics: true,
+        // A tooltip must not take over the control's own long-press action.
+        triggerMode: widget.onLongPress == null
+            ? TooltipTriggerMode.longPress
+            : TooltipTriggerMode.manual,
+        child: result,
+      );
+    }
+    return Semantics(
+      container: true,
+      button: true,
+      enabled: _enabled,
+      selected: widget.selected,
+      label: label,
       onTap: widget.onTap,
       onLongPress: widget.onLongPress,
-      behavior: HitTestBehavior.opaque,
-      child: AnimatedBuilder(
-        animation: _controller,
-        builder: (context, child) {
-          final t = Curves.easeOut.transform(_controller.value);
-          final scale = 1.0 + (widget.scaleDown - 1.0) * t;
-          return Transform.scale(
-            scale: scale,
-            child: child,
-          );
-        },
-        child: widget.child,
-      ),
+      child: result,
     );
   }
 }
@@ -165,18 +286,16 @@ class _StaggeredEntranceState extends State<StaggeredEntrance>
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      duration: widget.duration,
-      vsync: this,
-    );
+    _controller = AnimationController(duration: widget.duration, vsync: this);
 
     if (PerformanceService.instance.isConstrained) {
       _controller.value = 1;
       return;
     }
 
-    final delay =
-        Duration(milliseconds: widget.delayStep.inMilliseconds * widget.index);
+    final delay = Duration(
+      milliseconds: widget.delayStep.inMilliseconds * widget.index,
+    );
     Future.delayed(delay, () {
       if (mounted) _controller.forward();
     });
@@ -234,10 +353,7 @@ class _BouncyFadeSlideState extends State<BouncyFadeSlide>
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      duration: widget.duration,
-      vsync: this,
-    );
+    _controller = AnimationController(duration: widget.duration, vsync: this);
 
     if (PerformanceService.instance.isConstrained) {
       _controller.value = 1;
@@ -348,10 +464,7 @@ class NomadPageTransition extends StatelessWidget {
                 position: inSlide,
                 child: ScaleTransition(
                   scale: inScale,
-                  child: FadeTransition(
-                    opacity: inFade,
-                    child: child,
-                  ),
+                  child: FadeTransition(opacity: inFade, child: child),
                 ),
               ),
             ),
@@ -384,8 +497,10 @@ class NomadShimmer extends StatefulWidget {
 
 class _NomadShimmerState extends State<NomadShimmer>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _c =
-      AnimationController(vsync: this, duration: widget.period)..repeat();
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: widget.period,
+  )..repeat();
 
   @override
   void didUpdateWidget(covariant NomadShimmer oldWidget) {
@@ -451,8 +566,10 @@ class NomadTypingIndicator extends StatefulWidget {
 
 class _NomadTypingIndicatorState extends State<NomadTypingIndicator>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _c =
-      AnimationController(vsync: this, duration: widget.period)..repeat();
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: widget.period,
+  )..repeat();
 
   @override
   void dispose() {
@@ -524,9 +641,10 @@ class NomadPulseGlow extends StatefulWidget {
 
 class _NomadPulseGlowState extends State<NomadPulseGlow>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _c =
-      AnimationController(vsync: this, duration: widget.period)
-        ..repeat(reverse: true);
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: widget.period,
+  )..repeat(reverse: true);
 
   @override
   void didUpdateWidget(covariant NomadPulseGlow oldWidget) {
@@ -637,8 +755,9 @@ class _NomadAuraBackgroundState extends State<NomadAuraBackground> {
                     a: Alignment(ax * 2 - 1, ay * 2 - 1),
                     b: Alignment(bx * 2 - 1, by * 2 - 1),
                     colorA: widget.primary.withValues(alpha: widget.intensity),
-                    colorB: widget.secondary
-                        .withValues(alpha: widget.intensity * 0.9),
+                    colorB: widget.secondary.withValues(
+                      alpha: widget.intensity * 0.9,
+                    ),
                   ),
                 );
               },
@@ -674,14 +793,16 @@ class _AuraPainter extends CustomPainter {
         colors: [colorA, colorA.withValues(alpha: 0)],
         stops: const [0.0, 1.0],
       ).createShader(
-          Rect.fromCircle(center: a.alongSize(size), radius: radius));
+        Rect.fromCircle(center: a.alongSize(size), radius: radius),
+      );
 
     final paintB = Paint()
       ..shader = RadialGradient(
         colors: [colorB, colorB.withValues(alpha: 0)],
         stops: const [0.0, 1.0],
       ).createShader(
-          Rect.fromCircle(center: b.alongSize(size), radius: radius));
+        Rect.fromCircle(center: b.alongSize(size), radius: radius),
+      );
 
     canvas.drawRect(rect, paintA);
     canvas.drawRect(rect, paintB);
@@ -712,8 +833,10 @@ class NomadBlurReveal extends StatefulWidget {
 
 class _NomadBlurRevealState extends State<NomadBlurReveal>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _c =
-      AnimationController(vsync: this, duration: widget.duration);
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: widget.duration,
+  );
 
   @override
   void initState() {
@@ -735,10 +858,7 @@ class _NomadBlurRevealState extends State<NomadBlurReveal>
       animation: _c,
       builder: (context, child) {
         final t = Curves.easeOut.transform(_c.value);
-        return Opacity(
-          opacity: t,
-          child: child,
-        );
+        return Opacity(opacity: t, child: child);
       },
       child: widget.child,
     );
@@ -763,8 +883,10 @@ class NomadSuccessCheck extends StatefulWidget {
 
 class _NomadSuccessCheckState extends State<NomadSuccessCheck>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _c =
-      AnimationController(vsync: this, duration: widget.duration)..forward();
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: widget.duration,
+  )..forward();
 
   @override
   void dispose() {
@@ -916,10 +1038,7 @@ class _NomadHoverScaleState extends State<NomadHoverScale>
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      duration: widget.duration,
-      vsync: this,
-    );
+    _controller = AnimationController(duration: widget.duration, vsync: this);
   }
 
   @override

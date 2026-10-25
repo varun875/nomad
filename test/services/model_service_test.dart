@@ -2,6 +2,22 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nomad/core/services/model_service.dart';
 
 void main() {
+  group('ModelService recommendations', () {
+    test('4 GB onboarding recommends only Nano and Lite', () async {
+      final models = await ModelService.getRecommendedModels(ramGB: 4);
+      expect(models.map((model) => model.name), ['Nomad Nano', 'Nomad Lite']);
+    });
+
+    test('the full catalog is still visible on a 4 GB device', () async {
+      final models = await ModelService.getAvailableModels(ramGB: 4);
+      expect(models.length, ModelService.getAllModels().length);
+    });
+
+    test('larger devices retain their recommended models', () async {
+      expect(await ModelService.getRecommendedModels(ramGB: 16), hasLength(5));
+    });
+  });
+
   group('ModelService.filterByRam', () {
     final models = ModelService.getAllModels();
 
@@ -23,7 +39,7 @@ void main() {
       expect(filtered.map((m) => m.id), [
         'nomad-nano-lfm25-450m',
         'nomad-lite-qwen-3.5-0.8b',
-        'nomad-steady-gemma4-e2b',
+        'nomad-steady-lfm25-3b',
       ]);
     });
 
@@ -54,6 +70,40 @@ void main() {
       final models = ModelService.getAllModels();
       expect(models, hasLength(5));
       expect(models.every((m) => m.id.startsWith('nomad-')), isTrue);
+    });
+
+    test('configures Nomad Steady as LFM 2.5 VL 3B', () {
+      final models = ModelService.getAllModels();
+      final steady = models.firstWhere((m) => m.id == 'nomad-steady-lfm25-3b');
+      expect(steady.name, 'Nomad Steady');
+      expect(steady.baseModel, 'LFM 2.5 VL 3B (Q4_0)');
+      expect(steady.requiredRAM, 5);
+      expect(steady.sizeMB, 1594);
+      expect(steady.totalBytes, 1593894944);
+      expect(
+        ModelService.getDownloadUrl('nomad-steady-lfm25-3b'),
+        'https://huggingface.co/LiquidAI/LFM2.5-VL-3B-GGUF/resolve/main/LFM2.5-VL-3B-Q4_0.gguf',
+      );
+      expect(
+        ModelService.getMmprojUrl('nomad-steady-lfm25-3b'),
+        'https://huggingface.co/LiquidAI/LFM2.5-VL-3B-GGUF/resolve/main/mmproj-LFM2.5-VL-3B-Q8_0.gguf',
+      );
+      expect(
+        ModelService.repoFor('nomad-steady-lfm25-3b'),
+        'LiquidAI/LFM2.5-VL-3B-GGUF',
+      );
+      expect(
+        ModelService.filenameFor('nomad-steady-lfm25-3b'),
+        'LFM2.5-VL-3B-Q4_0.gguf',
+      );
+      expect(
+        ModelService.pinnedSha256For('nomad-steady-lfm25-3b'),
+        '364224c6bd45b4ff4bf8af71f7be384ea166fa0f573d68bc0b6e10ef9ae7ae58',
+      );
+      expect(
+        ModelService.pinnedMmprojSha256For('nomad-steady-lfm25-3b'),
+        'ecbbe7097f696dba67172738d79c9f01132cdb6c0b457606315e268df3d67e64',
+      );
     });
   });
 }

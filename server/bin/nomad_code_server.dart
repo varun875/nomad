@@ -1,11 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:llamadart/llamadart.dart';
 
 const _modelNames = <String, String>{
   'nomad-nano-lfm25-450m': 'Nomad Nano',
   'nomad-lite-qwen-3.5-0.8b': 'Nomad Lite',
+  'nomad-steady-lfm25-3b': 'Nomad Steady',
   'nomad-steady-gemma4-e2b': 'Nomad Steady',
   'nomad-smart-gemma4-e4b': 'Nomad Smart',
   'nomad-pro-mimo26-9b': 'Nomad Pro',
@@ -41,7 +43,22 @@ Future<void> main(List<String> args) async {
   await for (final request in server) {
     // Native model contexts can consume several gigabytes; process one
     // completion at a time so clients cannot accidentally OOM the host.
-    await _handle(request, modelDir, apiKey, allowedOrigin);
+    // A disconnect can fail response.done before close() is awaited.
+    request.response.done.ignore();
+    try {
+      await _handle(request, modelDir, apiKey, allowedOrigin);
+    } catch (error) {
+      stderr.writeln('Request failed: $error');
+      try {
+        await _error(request.response, HttpStatus.internalServerError,
+            'Internal server error.');
+      } catch (_) {
+        // Headers may already be sent, or the client may be disconnected.
+        try {
+          await request.response.close();
+        } catch (_) {}
+      }
+    }
   }
 }
 
@@ -146,25 +163,21 @@ Future<void> _handle(HttpRequest request, Directory modelDir, String apiKey,
 }
 
 Future<void> _chatCompletion(HttpRequest request, Directory modelDir) async {
-  final body = await utf8.decoder.bind(request).join();
   final Map<String, dynamic> json;
   try {
-    json = jsonDecode(body) as Map<String, dynamic>;
-  } catch (_) {
-    await _error(request.response, HttpStatus.badRequest, 'Request body must be JSON.');
+    // Decode after draining the body so invalid UTF-8 cannot cancel the socket.
+    final body = await request.fold(BytesBuilder(copy: false),
+        (bytes, chunk) => bytes..add(chunk));
+    final decoded = jsonDecode(utf8.decode(body.takeBytes()));
+    if (decoded is! Map<String, dynamic>) throw const FormatException();
+    json = decoded;
+  } on FormatException {
+    await _error(request.response, HttpStatus.badRequest, 'Request body must be a JSON object.');
     return;
   }
-  final modelId = json['model'] as String?;
-  final available = await _availableModels(modelDir);
-  _AvailableModel? model;
-  for (final candidate in available) {
-    if (candidate.id == modelId) {
-      model = candidate;
-      break;
-    }
-  }
-  if (model == null) {
-    await _error(request.response, HttpStatus.notFound, 'Model is not available. Check GET /v1/models.');
+  final modelId = json['model'];
+  if (modelId is! String || modelId.trim().isEmpty) {
+    await _error(request.response, HttpStatus.badRequest, 'model must be a non-empty string.');
     return;
   }
   final rawMessages = json['messages'];
@@ -188,18 +201,53 @@ Future<void> _chatCompletion(HttpRequest request, Directory modelDir) async {
     return;
   }
 
+  final temperature = json['temperature'] ?? 0.7;
+  if (temperature is! num || !temperature.isFinite) {
+    await _error(request.response, HttpStatus.badRequest, 'temperature must be a finite number.');
+    return;
+  }
+  final maxTokens = json['max_tokens'] ?? 2048;
+  if (maxTokens is! num || !maxTokens.isFinite ||
+      maxTokens <= 0 || maxTokens.toInt() != maxTokens) {
+    await _error(request.response, HttpStatus.badRequest, 'max_tokens must be a positive integer.');
+    return;
+  }
+  final stop = json['stop'] ?? const <String>[];
+  if (stop is! String &&
+      (stop is! List || stop.any((value) => value is! String))) {
+    await _error(request.response, HttpStatus.badRequest, 'stop must be a string or an array of strings.');
+    return;
+  }
+  final stream = json['stream'] ?? false;
+  if (stream is! bool) {
+    await _error(request.response, HttpStatus.badRequest, 'stream must be a boolean.');
+    return;
+  }
+  final params = GenerationParams(
+    temp: temperature.toDouble(),
+    maxTokens: maxTokens.toInt(),
+    stopSequences: stop is String ? [stop] : List<String>.from(stop as List),
+  );
+
+  final available = await _availableModels(modelDir);
+  _AvailableModel? model;
+  for (final candidate in available) {
+    if (candidate.id == modelId) {
+      model = candidate;
+      break;
+    }
+  }
+  if (model == null) {
+    await _error(request.response, HttpStatus.notFound, 'Model is not available. Check GET /v1/models.');
+    return;
+  }
+
   final engine = LlamaEngine(LlamaBackend());
   var responseStarted = false;
   try {
     await engine.loadModel(model.path, modelParams: const ModelParams(contextSize: 4096));
-    final params = GenerationParams(
-      temp: (json['temperature'] as num?)?.toDouble() ?? 0.7,
-      maxTokens: (json['max_tokens'] as num?)?.toInt() ?? 2048,
-      stopSequences: (json['stop'] is List) ? List<String>.from(json['stop'] as List) : const [],
-    );
     final id = 'chatcmpl-${DateTime.now().millisecondsSinceEpoch}';
     final created = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final stream = json['stream'] == true;
     if (stream) {
       request.response.headers.set(HttpHeaders.contentTypeHeader, 'text/event-stream; charset=utf-8');
       request.response.headers.set(HttpHeaders.cacheControlHeader, 'no-cache');
@@ -231,6 +279,7 @@ Future<void> _chatCompletion(HttpRequest request, Directory modelDir) async {
 
 Future<void> _error(HttpResponse response, int status, String message) async {
   response.statusCode = status;
+  response.headers.set(HttpHeaders.contentTypeHeader, 'application/json; charset=utf-8');
   response.write(jsonEncode({'error': {'message': message, 'type': 'nomad_error'}}));
   await response.close();
 }

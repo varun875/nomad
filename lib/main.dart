@@ -11,6 +11,7 @@ import 'l10n/app_localizations.dart';
 import 'features/onboarding/onboarding_page.dart';
 import 'features/chat/chat_screen.dart';
 import 'features/chat/chat_history_screen.dart';
+import 'features/code/code_screen.dart';
 import 'features/creations/creations_screen.dart';
 
 import 'features/creations/creation_app_screen.dart';
@@ -20,12 +21,14 @@ import 'features/settings/about_screen.dart';
 import 'features/settings/license_screen.dart';
 import 'core/widgets/nomad_shell.dart';
 import 'core/services/inference_service.dart';
+import 'core/services/assistant_platform_service.dart';
 import 'core/services/search_service.dart';
 import 'core/services/memory_service.dart';
 import 'core/services/performance_service.dart';
 import 'core/services/download_notification_service.dart';
 import 'core/theme/nomad_theme.dart';
 import 'core/widgets/nomad_animations.dart';
+import 'core/widgets/rich_message_renderer.dart';
 import 'features/you/you_screen.dart';
 import 'features/skills/skills_screen.dart';
 
@@ -54,9 +57,6 @@ void main() async {
     Hive.openBox('models'),
     Hive.openBox('settings'),
     SecureStorageService.openEncryptedBox('chats'),
-    SecureStorageService.openEncryptedBox('creations'),
-    SecureStorageService.openEncryptedBox('nomad_code_projects'),
-    SecureStorageService.openEncryptedBox('memories'),
   ]);
   final startup = await Future.wait<dynamic>([
     SharedPreferences.getInstance(),
@@ -64,12 +64,17 @@ void main() async {
   ]);
   final prefs = startup.first as SharedPreferences;
   final onboarded = prefs.getBool('onboarded') ?? false;
+  if (PerformanceService.instance.isLowEnd) {
+    PaintingBinding.instance.imageCache
+      ..maximumSizeBytes = 24 * 1024 * 1024
+      ..maximumSize = 50;
+  }
 
   // Web search: TinyFish (per-user Monid key) when configured, else DuckDuckGo.
   await SearchService().loadFromStorage();
 
-  // Pre-warm the model on app start so the first message is near-instant
-  if (onboarded) {
+  // Low-RAM phones load on demand, avoiding native allocations during startup.
+  if (onboarded && !PerformanceService.instance.isLowEnd) {
     final savedModelId = prefs.getString('selectedModelId');
     if (savedModelId != null && savedModelId.isNotEmpty) {
       unawaited(InferenceService().warmUp(savedModelId));
@@ -91,9 +96,13 @@ void main() async {
   runApp(ProviderScope(child: NomadApp(onboarded: onboarded)));
 
   // Defer non-critical init until after the first frame so cold start doesn't
-  // block on disk/notification I/O; both are needed only on later interaction.
-  unawaited(MemoryService().init());
-  unawaited(DownloadNotificationService.initialize());
+  // block on disk/notification I/O or Keystore IPC; all are needed only on later interaction.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(MemoryService().init());
+    unawaited(DownloadNotificationService.initialize());
+    unawaited(SecureStorageService.openEncryptedBox('creations'));
+    unawaited(SecureStorageService.openEncryptedBox('nomad_code_projects'));
+  });
 }
 
 class NomadTransitionPage extends CustomTransitionPage {
@@ -145,23 +154,31 @@ Page<dynamic> buildSlidePageInverse({
   );
 }
 
-class NomadApp extends StatefulWidget {
+class NomadApp extends ConsumerStatefulWidget {
   final bool onboarded;
   const NomadApp({super.key, required this.onboarded});
 
   @override
-  State<NomadApp> createState() => _NomadAppState();
+  ConsumerState<NomadApp> createState() => _NomadAppState();
 }
 
-class _NomadAppState extends State<NomadApp> {
+class _NomadAppState extends ConsumerState<NomadApp>
+    with WidgetsBindingObserver {
   late final GoRouter _router;
+  late final AssistantPlatformService _assistant;
+  StreamSubscription<AssistantLaunch>? _assistantLaunches;
+  AssistantLaunch? _pendingAssistantLaunch;
+  bool _assistantNavigationScheduled = false;
+  StreamSubscription<Uri?>? _widgetClicks;
 
   void _setupWidgetClickHandler() {
-    HomeWidget.widgetClicked.listen((_) async {
+    _widgetClicks = HomeWidget.widgetClicked.listen((_) async {
       if (!mounted) return;
-      final creationId = await HomeWidget.getWidgetData<String>('creationId',
-          defaultValue: '');
-      if (creationId != null && creationId.isNotEmpty) {
+      final creationId = await HomeWidget.getWidgetData<String>(
+        'creationId',
+        defaultValue: '',
+      );
+      if (mounted && creationId != null && creationId.isNotEmpty) {
         _router.push('/creations/app/$creationId');
       }
     });
@@ -170,16 +187,15 @@ class _NomadAppState extends State<NomadApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _setupWidgetClickHandler();
     _router = GoRouter(
       initialLocation: widget.onboarded ? '/home' : '/onboarding',
       routes: [
         GoRoute(
           path: '/onboarding',
-          pageBuilder: (context, state) => buildSlidePage(
-            state: state,
-            child: const OnboardingScreen(),
-          ),
+          pageBuilder: (context, state) =>
+              buildSlidePage(state: state, child: const OnboardingScreen()),
         ),
         ShellRoute(
           pageBuilder: (context, state, child) => buildSlidePageInverse(
@@ -190,9 +206,25 @@ class _NomadAppState extends State<NomadApp> {
           routes: [
             GoRoute(
               path: '/home',
+              pageBuilder: (context, state) =>
+                  buildSlidePage(state: state, child: const ChatScreen()),
+            ),
+            GoRoute(
+              path: '/assistant',
               pageBuilder: (context, state) => buildSlidePage(
                 state: state,
-                child: const ChatScreen(),
+                child: ChatScreen(
+                  assistantLaunch: state.extra is AssistantLaunch
+                      ? state.extra as AssistantLaunch
+                      : const AssistantLaunch(id: 'voice-screen'),
+                ),
+              ),
+            ),
+            GoRoute(
+              path: '/code',
+              pageBuilder: (context, state) => buildSlidePageInverse(
+                state: state,
+                child: const CodeScreen(),
               ),
             ),
             GoRoute(
@@ -200,6 +232,13 @@ class _NomadAppState extends State<NomadApp> {
               pageBuilder: (context, state) => buildSlidePageInverse(
                 state: state,
                 child: const CreationsScreen(),
+              ),
+            ),
+            GoRoute(
+              path: '/settings/models',
+              pageBuilder: (context, state) => buildSlidePageInverse(
+                state: state,
+                child: const ModelsScreen(),
               ),
             ),
             GoRoute(
@@ -231,10 +270,8 @@ class _NomadAppState extends State<NomadApp> {
             ),
             GoRoute(
               path: '/you',
-              pageBuilder: (context, state) => buildSlidePageInverse(
-                state: state,
-                child: const YouScreen(),
-              ),
+              pageBuilder: (context, state) =>
+                  buildSlidePageInverse(state: state, child: const YouScreen()),
             ),
             GoRoute(
               path: '/skills',
@@ -251,13 +288,6 @@ class _NomadAppState extends State<NomadApp> {
             state: state,
             child: const ChatHistoryScreen(),
             exitToRight: false, // Forces sidebar to slide left when covered
-          ),
-        ),
-        GoRoute(
-          path: '/settings/models',
-          pageBuilder: (context, state) => buildSlidePageInverse(
-            state: state,
-            child: const ModelsScreen(),
           ),
         ),
         GoRoute(
@@ -279,6 +309,72 @@ class _NomadAppState extends State<NomadApp> {
         ),
       ],
     );
+    _router.routerDelegate.addListener(_deliverAssistantLaunch);
+    _assistant = ref.read(assistantPlatformProvider);
+    _assistantLaunches = _assistant.launches.listen((launch) {
+      _pendingAssistantLaunch = launch;
+      _deliverAssistantLaunch();
+    });
+    unawaited(_assistant.start());
+  }
+
+  void _deliverAssistantLaunch() {
+    if (!mounted ||
+        _pendingAssistantLaunch == null ||
+        _router.location.startsWith('/onboarding') ||
+        _assistantNavigationScheduled) {
+      return;
+    }
+    _assistantNavigationScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _assistantNavigationScheduled = false;
+      if (!mounted || _router.location.startsWith('/onboarding')) return;
+      final launch = _pendingAssistantLaunch;
+      if (launch == null) return;
+      _pendingAssistantLaunch = null;
+      if (Uri.parse(_router.location).path != '/assistant') {
+        ref.read(chatMessagesProvider.notifier).clear();
+      }
+      _router.go('/assistant?invocation=${Uri.encodeQueryComponent(launch.id)}',
+          extra: launch);
+    });
+    // An assistant invocation can arrive while the foreground app is idle.
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  @override
+  void didHaveMemoryPressure() => _releaseIdleMemory();
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_assistant.checkPendingLaunch());
+    }
+    if (PerformanceService.instance.isLowEnd &&
+        (state == AppLifecycleState.paused ||
+            state == AppLifecycleState.detached)) {
+      _releaseIdleMemory();
+    }
+  }
+
+  void _releaseIdleMemory() {
+    PaintingBinding.instance.imageCache
+      ..clear()
+      ..clearLiveImages();
+    RichMessageRenderer.clearCache();
+    unawaited(InferenceService().unloadModel().catchError((Object error) {
+      debugPrint('Could not release idle model memory: $error');
+    }));
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _widgetClicks?.cancel();
+    _assistantLaunches?.cancel();
+    _router.routerDelegate.removeListener(_deliverAssistantLaunch);
+    _router.dispose();
+    super.dispose();
   }
 
   @override

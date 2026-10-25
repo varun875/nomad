@@ -6,9 +6,15 @@ class Breakpoints {
   static const double desktop = 1100;
 }
 
+class ContentWidths {
+  static const double chat = 820;
+  static const double page = 1040;
+}
+
 extension ResponsiveContext on BuildContext {
   bool get isMobile => width < Breakpoints.mobile;
-  bool get isTablet => width >= Breakpoints.mobile && width < Breakpoints.tablet;
+  bool get isTablet =>
+      width >= Breakpoints.mobile && width < Breakpoints.tablet;
   bool get isDesktop => width >= Breakpoints.tablet;
   bool get isWideDesktop => width >= Breakpoints.desktop;
 
@@ -17,10 +23,9 @@ extension ResponsiveContext on BuildContext {
   double get topPadding => MediaQuery.of(this).padding.top;
   double get keyboardHeight => MediaQuery.of(this).viewInsets.bottom;
 
-  double get contentMaxWidth => double.infinity;
+  double get contentMaxWidth => ContentWidths.page;
 
-  EdgeInsets get screenPadding =>
-      EdgeInsets.symmetric(
+  EdgeInsets get screenPadding => EdgeInsets.symmetric(
         horizontal: isDesktop ? 48 : 20,
         vertical: isDesktop ? 32 : 0,
       );
@@ -43,5 +48,3 @@ class ResponsiveCenter extends StatelessWidget {
     );
   }
 }
-
-

@@ -14,7 +14,9 @@ configurations.all {
 android {
     namespace = "com.varun.nomad"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = flutter.ndkVersion
+    // flutter.ndkVersion resolved to a partial (interrupted) NDK download;
+    // pin to the NDK actually installed in the SDK so builds are reproducible.
+    ndkVersion = "29.0.13113456"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -4,7 +4,7 @@
 
 ## Overview
 
-Nomad is a fully offline AI assistant for Android. It runs quantized LLMs directly on your device using llamadart (llama.cpp bindings). No accounts, no cloud, no data leaving your phone — ever.
+Nomad is an offline-first AI assistant for Android. It runs quantized LLMs directly on your device using llamadart (llama.cpp bindings), without an account or a cloud inference service. Optional web search and the device's speech services can use the network.
 
 But it can also search the web when you want it to, combining the privacy of local inference with the freshness of live search results.
 
@@ -16,11 +16,11 @@ But it can also search the web when you want it to, combining the privacy of loc
 |-------|------|-----|-------------------|
 | Nomad Nano | 229 MB | 2 GB+ | Ultra-compact VLM: sub-250ms vision, runs on 2GB RAM |
 | Nomad Lite | 533 MB | 3 GB+ | Vision-capable, ultra-fast, sub-1B |
-| Nomad Steady | 2.5 GB | 5 GB+ | Multimodal reasoning, vision, balanced speed |
+| Nomad Steady | 1.7 GB | 5 GB+ | Multimodal reasoning, vision, balanced speed |
 | Nomad Smart | 5.3 GB | 7 GB+ | Flagship: vision, complex analysis, deep reasoning |
 | Nomad Pro | 6.0 GB | 16 GB | Powerhouse: coding, agentic tool use, multi-step reasoning |
 
-All models are GGUF quantizations of LFM 2.5 VL 450M (Nano), Qwen 3.5 0.8B (Lite), Gemma 4 E2B/E4B (Steady/Smart), and MiMo V2.6 Distill 9B (Pro), downloaded directly from Hugging Face inside the app via the public CDN (no token needed).
+All models are GGUF quantizations of LFM 2.5 VL 450M/3B (Nano/Steady), Qwen 3.5 0.8B (Lite), Gemma 4 E4B (Smart), and MiMo V2.6 Distill 9B (Pro), downloaded directly from Hugging Face inside the app via the public CDN (no token needed).
 
 ### Vision
 
@@ -34,7 +34,7 @@ Toggle the globe icon and Nomad becomes an agent — it decides when to search, 
 - **DuckDuckGo** — zero-config HTML scraper fallback
 - **SearXNG** — self-host an instance, point Nomad at your URL
 
-When search is off, everything runs 100% offline.
+When search is off, downloaded-model text inference runs locally. Speech recognition follows the device's speech-provider settings and may still require a connection.
 
 ### App Builder ("Creations")
 
@@ -56,9 +56,18 @@ Nomad proactively monitors its context window. When it hits 70% capacity, older 
 
 Text streams in live as it's generated. Responses that get cut off automatically continue where they left off so no output is lost.
 
-### Voice Live Mode
+### Voice Assistant
 
-On-device speech-to-text and text-to-speech with a live waveform composer. Say what's on your mind; Nomad listens, thinks, and talks back.
+Tap **Nomad Voice** in the chat composer. Nomad shows its listening, processing, thinking, and speaking state, streams short spoken answers, and listens for a follow-up only after playback finishes. Tap the middle button to interrupt, **Pause voice** to pause, or **End voice** / **Type instead** to return to typing. Leaving the app or the screen closes the microphone; it does not silently restart on resume.
+
+For the Android system shortcut, use **Settings → Digital Assistant** to select Nomad, then invoke your device's assistant gesture/button. Cold starts and repeated invocations use the same voice session. Complete onboarding first and grant microphone access when prompted. This is an explicitly invoked assistant, not an always-on wake-word listener.
+
+- Questions use your selected downloaded model and are saved in conversation history. Enable **Web search** in the voice panel when you want the model to look up current information.
+- Common English phone commands work without a model: “open YouTube”, “set a timer for ten minutes”, “set an alarm for 7:30 AM”, “navigate to the nearest pharmacy”, “open Wi-Fi settings”, and “what time is it?”. Timers/alarms open the device's Clock app with the requested details; settings commands open the relevant controls rather than claiming to toggle restricted Android settings.
+- Recognition uses an installed system speech provider (such as Google's or Samsung's). Its language packs, network requirements, and offline support depend on that provider. Playback prefers an installed local TTS voice matching the device language.
+- Permission, missing-provider, language, network, model, and playback errors have visible recovery controls. Voice uses temporary audio focus and never changes alarm, ringtone, notification, or media volume levels.
+
+Automated tests exercise late recognition results, interruption, playback completion, permission recovery, navigation, and assistant launches. A real Android device is still needed to verify microphone acoustics, OEM assistant gestures, Bluetooth routing, and the device's recognition/Clock apps.
 
 ### Localized UI
 
@@ -76,6 +85,17 @@ The entire interface is translated into 6 languages:
 ### Engineered for 2–6 GB Phones
 
 Smooth at the low end, not just on flagships: big-core-aware thread detection (avoids the MediaTek efficiency-core scheduling collapse), flash attention + quantized KV cache (≈50% less RAM), lazy vision-encoder loading on constrained devices, adaptive streaming throttle, and serialized model loads to prevent native OOM spikes.
+
+### 4 GB Memory Profile
+
+Phones with 4 GB RAM or less load models on demand rather than preloading them at startup. Onboarding recommends Nano and Lite; the full Models catalog remains visible, but the low-memory runtime rejects incompatible or oversized models without deleting their downloads.
+
+- Android free-memory checks reserve 512 MiB beyond the model file size and 256 MiB beyond an additional vision projector. These are conservative estimates, not measured peak-memory guarantees.
+- Vision processes one image at a time, with gallery inputs resized to at most 512 x 512. The projector is released after a response, cancellation, or generation error, while the text model stays available.
+- Model loads and disposal are serialized. A second response cannot race the current native decode. Backgrounding a low-memory phone or receiving a memory-pressure signal requests release once inference is idle.
+- The image cache is capped at 24 MiB / 50 entries on low-memory phones, parsed-reply caches have a source-text budget, and streaming UI updates are coalesced to at most 10 per second during generation.
+
+Real-device validation is still required: profile sustained chat, image requests, model switches, and background/resume on a 4 GB Android device. Use `adb shell dumpsys meminfo com.varun.nomad` alongside Flutter profile-mode frame timings; do not infer crash-free operation or tokens/second from desktop unit tests. Higher-memory model/context defaults are unchanged.
 
 ## Getting Started
 
@@ -116,7 +136,10 @@ lib/
 │   │   ├── search_service.dart      # DuckDuckGo / SearXNG (free)
 │   │   ├── performance_service.dart # Device-tier detection for effects/perf
 │   │   ├── memory_service.dart      # Local recall store
-│   │   └── tts_service.dart         # On-device speech
+│   │   ├── voice_session_controller.dart # Voice turn-taking, cancellation, recovery
+│   │   ├── assistant_platform_service.dart # Android launches and phone actions
+│   │   ├── speech_input_service.dart # System speech-recognition adapter
+│   │   └── tts_service.dart         # Locale-aware, cancellable spoken replies
 │   ├── providers/               # Riverpod state (downloads, models, chats)
 │   ├── theme/                   # NomadColors, light/dark themes (Instrument Sans)
 │   └── widgets/                 # Shared UI, tier-aware animations
@@ -154,9 +177,9 @@ lib/
 Nomad is built with privacy as a hard requirement:
 
 - **No account** — download and start using immediately
-- **No cloud** — inference runs locally via llama.cpp
+- **Local inference** — model inference runs locally via llama.cpp
 - **No telemetry** — zero analytics, zero tracking
-- **No internet needed** — fully offline when search is toggled off
+- **Offline text chat** — downloaded-model text chat works without internet. Web search and the selected system speech provider may send requests over the network.
 
 ## What's New in v0.2.0
 

@@ -38,15 +38,17 @@ String extractThinking(String text) {
   return '';
 }
 
+final _stripChannelRegex = RegExp(r'<\|channel>[\s\S]*?<channel\|>', dotAll: true);
+final _stripThinkRegex = RegExp(r'<\|think\|>\s*\n?[\s\S]*?(?:<\|turn>model|$)', dotAll: true);
+final _stripLegacyThinkRegex = RegExp(r'<think>[\s\S]*?</think>', dotAll: true);
+
 /// Remove thinking-tag wrappers, leaving only the visible reply text.
 String stripThinkingTags(String text) {
+  if (!text.contains('<')) return text.trim();
   return text
-      .replaceAll(RegExp(r'<\|channel>[\s\S]*?<channel\|>', dotAll: true), '')
-      .replaceAll(
-        RegExp(r'<\|think\|>\s*\n?[\s\S]*?(?:<\|turn>model|$)', dotAll: true),
-        '',
-      )
-      .replaceAll(RegExp(r'<think>[\s\S]*?</think>', dotAll: true), '')
+      .replaceAll(_stripChannelRegex, '')
+      .replaceAll(_stripThinkRegex, '')
+      .replaceAll(_stripLegacyThinkRegex, '')
       .trim();
 }
 

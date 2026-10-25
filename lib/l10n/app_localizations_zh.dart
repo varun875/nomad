@@ -30,7 +30,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get clearCache => '清除缓存';
 
   @override
-  String get removeTemporaryFiles => '删除临时文件';
+  String get removeTemporaryFiles => '清除缓存的预览和格式化消息';
 
   @override
   String get aboutNomad => '关于Nomad';
@@ -63,7 +63,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get clearCacheQuestion => '清除缓存？';
 
   @override
-  String get clearCacheMessage => '这仅删除临时文件。您下载的模型和聊天记录不会受到影响。';
+  String get clearCacheMessage => '这会清除缓存的预览和格式化消息。您的模型、聊天记录、创作、记忆、附件和设置都会保留。';
 
   @override
   String get deleteModelQuestion => '删除模型？';

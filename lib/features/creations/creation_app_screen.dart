@@ -1,139 +1,80 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:webview_flutter/webview_flutter.dart';
 import '../../core/theme/nomad_theme.dart';
 import '../../l10n/app_localizations.dart';
+import 'creation_preview.dart';
 import 'creations_screen.dart';
 
-class CreationAppScreen extends ConsumerStatefulWidget {
+class CreationAppScreen extends ConsumerWidget {
   final String creationId;
   const CreationAppScreen({super.key, required this.creationId});
 
   @override
-  ConsumerState<CreationAppScreen> createState() => _CreationAppScreenState();
-}
-
-class _CreationAppScreenState extends ConsumerState<CreationAppScreen> {
-  late final WebViewController _controller;
-  bool _isLoading = true;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onNavigationRequest: (NavigationRequest request) {
-            // loadHtmlString uses about:blank; block any prompt-injected
-            // navigation or exfiltration to external hosts.
-            if (request.url == 'about:blank' ||
-                request.url.startsWith('data:') ||
-                request.url.startsWith('blob:')) {
-              return NavigationDecision.navigate;
-            }
-            return NavigationDecision.prevent;
-          },
-          onPageFinished: (String url) {
-            if (mounted) setState(() => _isLoading = false);
-          },
-          onWebResourceError: (WebResourceError error) {
-            if (mounted) setState(() => _error = error.description);
-          },
-        ),
-      );
-    _loadCreation();
-  }
-
-  static String _wrapWithCsp(String html) {
-    const csp =
-        '<meta http-equiv="Content-Security-Policy" '
-        'content="default-src \'none\'; script-src \'unsafe-inline\'; '
-        'style-src \'unsafe-inline\'; img-src data: blob:; '
-        'font-src data:; media-src data: blob:; connect-src \'none\'; '
-        'frame-src \'none\'; object-src \'none\'; base-uri \'none\'; '
-        'form-action \'none\'">';
-    // Always enforce our strict policy rather than trusting page-supplied
-    // CSP. Browsers enforce the intersection of every CSP policy, so content
-    // that injects its own permissive policy (e.g. connect-src *) still
-    // cannot relax the connect-src 'none' / frame-src 'none' rules below.
-    return '$csp\n$html';
-  }
-
-  void _loadCreation() {
-    final creations = ref.read(creationsProvider);
-    try {
-      final creation = creations.firstWhere((c) => c.id == widget.creationId);
-      _controller.loadHtmlString(_wrapWithCsp(creation.html));
-    } catch (e) {
-      setState(() {
-        _error = AppLocalizations.of(context)!.creationNotFound;
-        _isLoading = false;
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     final brightness = Theme.of(context).brightness;
+    final loaded = ref.watch(creationsLoadedProvider);
+    final creations = ref.watch(creationsProvider);
+    final l10n = AppLocalizations.of(context)!;
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
-        statusBarIconBrightness: brightness == Brightness.dark ? Brightness.light : Brightness.dark,
+        statusBarIconBrightness:
+            brightness == Brightness.dark ? Brightness.light : Brightness.dark,
       ),
       child: Scaffold(
-        backgroundColor: Colors.white, // Most HTML apps expect a white background
+        backgroundColor: nomad.background,
         body: Stack(
           children: [
-            if (_error != null)
-              Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.error_outline_rounded, size: 48, color: nomad.textSecondary),
-                    const SizedBox(height: 16),
-                    Text(_error!, style: TextStyle(color: nomad.textPrimary)),
-                    const SizedBox(height: 24),
-                    TextButton(
-                      onPressed: () { HapticFeedback.lightImpact(); Navigator.of(context).pop(); },
-                      child: Text(AppLocalizations.of(context)!.goBack),
-                    ),
-                  ],
+            Positioned.fill(
+              child: loaded.when(
+                skipLoadingOnRefresh: false,
+                loading: () => Center(
+                  child: CircularProgressIndicator(color: nomad.textPrimary),
                 ),
-              )
-            else
-              SafeArea(
-                bottom: false,
-                child: WebViewWidget(controller: _controller),
+                error: (error, stack) => CreationPreviewError(
+                  message: 'Could not load creation. Please try again.',
+                  onRetry: () => ref.invalidate(creationsProvider),
+                ),
+                data: (_) {
+                  Creation? creation;
+                  for (final item in creations) {
+                    if (item.id == creationId) {
+                      creation = item;
+                      break;
+                    }
+                  }
+                  if (creation == null) {
+                    return CreationPreviewError(message: l10n.creationNotFound);
+                  }
+                  return SafeArea(
+                    bottom: false,
+                    child: CreationPreview(
+                      key: ValueKey((creation.id, creation.html)),
+                      html: creation.html,
+                    ),
+                  );
+                },
               ),
-            
-            if (_isLoading && _error == null)
-              Center(
-                child: CircularProgressIndicator(color: nomad.textPrimary),
-              ),
+            ),
 
-            // Subtle close button for "App" feel but still allowing exit
-            if (!_isLoading)
+            // Keep exit available even while storage or the webview is loading.
             Positioned(
               top: MediaQuery.of(context).padding.top + 10,
-              right: 20,
-              child: Opacity(
-                opacity: 0.3,
-                child: GestureDetector(
-                  onTap: () { HapticFeedback.lightImpact(); Navigator.of(context).pop(); },
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.1),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(Icons.close, size: 16, color: Colors.black),
-                  ),
+              right: 12,
+              child: IconButton(
+                tooltip: l10n.goBack,
+                style: IconButton.styleFrom(
+                  backgroundColor: nomad.surface,
+                  foregroundColor: nomad.textPrimary,
                 ),
+                onPressed: () {
+                  HapticFeedback.lightImpact();
+                  Navigator.of(context).maybePop();
+                },
+                icon: const Icon(Icons.close, size: 20),
               ),
             ),
           ],

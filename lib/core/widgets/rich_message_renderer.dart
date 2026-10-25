@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../core/theme/nomad_theme.dart';
 import '../../core/widgets/nomad_animations.dart';
+import '../services/performance_service.dart';
 
 // Pre-compiled regex patterns for performance (library-private top-level)
 final _thinkRegex = RegExp(
@@ -25,18 +26,28 @@ class RichMessageRenderer extends StatelessWidget {
   });
 
   static List<MessageSegment> parseSegmentsStatic(String text) {
-    return const RichMessageRenderer(text: '', isUser: false)._parseSegments(text);
+    return const RichMessageRenderer(text: '', isUser: false)
+        ._parseSegments(text);
   }
 
   static final Map<String, List<MessageSegment>> _parseCache = {};
   static const int _maxCacheEntries = 50;
+  static int _cachedCharacters = 0;
+
+  static void clearCache() {
+    _parseCache.clear();
+    _cachedCharacters = 0;
+  }
+
+  @visibleForTesting
+  static int get cachedSourceCharacters => _cachedCharacters;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final nomad = theme.extension<NomadColorsExtension>()!;
 
-    final segments = _getOrParseSegments(text.trim());
+    final segments = getOrParseSegments(text.trim());
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -45,18 +56,30 @@ class RichMessageRenderer extends StatelessWidget {
     );
   }
 
-  List<MessageSegment> _getOrParseSegments(String text) {
+  @visibleForTesting
+  List<MessageSegment> getOrParseSegments(String text) {
     final cached = _parseCache[text];
     if (cached != null) return cached;
     final segments = _parseSegments(text);
-    if (_parseCache.length >= _maxCacheEntries) {
-      _parseCache.remove(_parseCache.keys.first);
+    final maxCharacters =
+        PerformanceService.instance.isLowEnd ? 256 * 1024 : 1024 * 1024;
+    // Bound retained text as well as entry count; one huge reply must not pin
+    // another full copy in the process-wide cache after its chat is closed.
+    if (text.length > maxCharacters) return segments;
+    while (_parseCache.isNotEmpty &&
+        (_parseCache.length >= _maxCacheEntries ||
+            _cachedCharacters + text.length > maxCharacters)) {
+      final oldest = _parseCache.keys.first;
+      _cachedCharacters -= oldest.length;
+      _parseCache.remove(oldest);
     }
     _parseCache[text] = segments;
+    _cachedCharacters += text.length;
     return segments;
   }
 
-  Widget _buildSegment(BuildContext context, MessageSegment segment, NomadColorsExtension nomad) {
+  Widget _buildSegment(BuildContext context, MessageSegment segment,
+      NomadColorsExtension nomad) {
     if (segment is ThinkSegment) {
       return _ThinkBlock(content: segment.content, nomad: nomad);
     }
@@ -64,13 +87,15 @@ class RichMessageRenderer extends StatelessWidget {
       return _TableBlock(rows: segment.rows, nomad: nomad);
     }
     if (segment is HeaderSegment) {
-      return _HeaderBlock(text: segment.text, level: segment.level, nomad: nomad);
+      return _HeaderBlock(
+          text: segment.text, level: segment.level, nomad: nomad);
     }
     if (segment is MathSegment) {
       return _MathBlock(text: segment.text, nomad: nomad);
     }
     if (segment is CodeSegment) {
-      return _CodeBlock(code: segment.code, language: segment.language, nomad: nomad);
+      return _CodeBlock(
+          code: segment.code, language: segment.language, nomad: nomad);
     }
     if (segment is TextSegment) {
       return _RichTextBlock(text: segment.text, nomad: nomad, isUser: isUser);
@@ -135,7 +160,8 @@ class RichMessageRenderer extends StatelessWidget {
       final String trimmedLine = rawLine.trim();
 
       if (trimmedLine.startsWith('#### ')) {
-        segments.add(HeaderSegment(text: trimmedLine.substring(5).trim(), level: 4));
+        segments.add(
+            HeaderSegment(text: trimmedLine.substring(5).trim(), level: 4));
         i++;
       } else if (trimmedLine.startsWith('```')) {
         final language = trimmedLine.substring(3).trim();
@@ -156,14 +182,15 @@ class RichMessageRenderer extends StatelessWidget {
           ));
         }
       } else if (trimmedLine.startsWith('### ')) {
-        segments.add(HeaderSegment(text: trimmedLine.substring(4).trim(), level: 3));
+        segments.add(
+            HeaderSegment(text: trimmedLine.substring(4).trim(), level: 3));
         i++;
-      }
-      else if (trimmedLine.startsWith('\$\$')) {
+      } else if (trimmedLine.startsWith('\$\$')) {
         final mathLines = <String>[];
         if (trimmedLine.length > 2 && trimmedLine.endsWith('\$\$')) {
-           segments.add(MathSegment(text: trimmedLine.substring(2, trimmedLine.length - 2).trim()));
-           i++;
+          segments.add(MathSegment(
+              text: trimmedLine.substring(2, trimmedLine.length - 2).trim()));
+          i++;
         } else {
           i++;
           while (i < lines.length && !lines[i].trim().startsWith('\$\$')) {
@@ -175,8 +202,7 @@ class RichMessageRenderer extends StatelessWidget {
           }
           if (i < lines.length) i++;
         }
-      }
-      else if (_isTableRow(rawLine)) {
+      } else if (_isTableRow(rawLine)) {
         final tableLines = <String>[];
         while (i < lines.length && _isTableRow(lines[i])) {
           tableLines.add(lines[i]);
@@ -187,13 +213,15 @@ class RichMessageRenderer extends StatelessWidget {
         } else {
           segments.add(TextSegment(text: tableLines.join('\n')));
         }
-      }
-      else {
+      } else {
         final textLines = <String>[];
         while (i < lines.length) {
           final l = lines[i];
           final tl = l.trim();
-          if (_isTableRow(l) || tl.startsWith('###') || tl.startsWith('```') || tl.startsWith('\$\$')) {
+          if (_isTableRow(l) ||
+              tl.startsWith('###') ||
+              tl.startsWith('```') ||
+              tl.startsWith('\$\$')) {
             break;
           }
           textLines.add(l);
@@ -263,14 +291,16 @@ class _HeaderBlock extends StatelessWidget {
   final int level;
   final NomadColorsExtension nomad;
 
-  const _HeaderBlock({required this.text, required this.level, required this.nomad});
+  const _HeaderBlock(
+      {required this.text, required this.level, required this.nomad});
 
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    
-    final style = level == 3 
-        ? textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w400, letterSpacing: -0.2)
+
+    final style = level == 3
+        ? textTheme.headlineMedium
+            ?.copyWith(fontWeight: FontWeight.w400, letterSpacing: -0.2)
         : textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w400);
 
     return Padding(
@@ -332,102 +362,103 @@ class _CodeBlock extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Container(
-          decoration: BoxDecoration(
-            color: nomad.textPrimary.withValues(alpha: 0.05),
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: nomad.border, width: 0.5),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (language != null && language!.isNotEmpty)
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: nomad.textPrimary.withValues(alpha: 0.08),
-                    border: Border(
-                      bottom: BorderSide(color: nomad.border, width: 0.5),
-                    ),
-                  ),
-                  child: Text(
-                    language!,
-                    style: textTheme.labelMedium?.copyWith(
-                      color: nomad.textSecondary,
-                      fontWeight: FontWeight.w400,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ),
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      code,
-                      style: TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 13,
-                        fontWeight: FontWeight.w400,
-                        color: nomad.textPrimary,
-                        height: 1.5,
-                      ),
-                    ),
-                    if (lineCount > 1)
-                      const SizedBox(height: 4),
-                  ],
-                ),
-              ),
-              // Copy button
-              Align(
-                alignment: Alignment.centerRight,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(0, 0, 8, 8),
-                  child: BouncyTap(
-                    onTap: () {
-                      Clipboard.setData(ClipboardData(text: code));
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Copied to clipboard'),
-                            behavior: SnackBarBehavior.floating,
-                            duration: Duration(seconds: 2),
-                          ),
-                        );
-                      }
-                    },
-                    scaleDown: 0.9,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: nomad.textPrimary.withValues(alpha: 0.08),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.copy, size: 14, color: nomad.textSecondary),
-                          const SizedBox(width: 4),
-                          Text(
-                            'Copy',
-                            style: textTheme.labelMedium?.copyWith(
-                              color: nomad.textSecondary,
-                              fontWeight: FontWeight.w400,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+        decoration: BoxDecoration(
+          color: nomad.textPrimary.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: nomad.border, width: 0.5),
         ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (language != null && language!.isNotEmpty)
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                decoration: BoxDecoration(
+                  color: nomad.textPrimary.withValues(alpha: 0.08),
+                  border: Border(
+                    bottom: BorderSide(color: nomad.border, width: 0.5),
+                  ),
+                ),
+                child: Text(
+                  language!,
+                  style: textTheme.labelMedium?.copyWith(
+                    color: nomad.textSecondary,
+                    fontWeight: FontWeight.w400,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    code,
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 13,
+                      fontWeight: FontWeight.w400,
+                      color: nomad.textPrimary,
+                      height: 1.5,
+                    ),
+                  ),
+                  if (lineCount > 1) const SizedBox(height: 4),
+                ],
+              ),
+            ),
+            // Copy button
+            Align(
+              alignment: Alignment.centerRight,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(0, 0, 8, 8),
+                child: BouncyTap(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: code));
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Copied to clipboard'),
+                          behavior: SnackBarBehavior.floating,
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
+                  scaleDown: 0.9,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: nomad.textPrimary.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.copy, size: 14, color: nomad.textSecondary),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Copy',
+                          style: textTheme.labelMedium?.copyWith(
+                            color: nomad.textSecondary,
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -526,52 +557,53 @@ class _ThinkBlockState extends State<_ThinkBlock> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Container(
-          decoration: BoxDecoration(
-            color: bgColor,
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: borderColor, width: 0.5),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              GestureDetector(
-                onTap: () => setState(() => _expanded = !_expanded),
-                behavior: HitTestBehavior.opaque,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                  child: Row(
-                    children: [
-                      Icon(
-                        _expanded ? Icons.expand_more : Icons.chevron_right,
-                        size: 18,
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: borderColor, width: 0.5),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            GestureDetector(
+              onTap: () => setState(() => _expanded = !_expanded),
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                child: Row(
+                  children: [
+                    Icon(
+                      _expanded ? Icons.expand_more : Icons.chevron_right,
+                      size: 18,
+                      color: widget.nomad.textSecondary,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _expanded ? 'Hide reasoning' : 'Thinking...',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w400,
                         color: widget.nomad.textSecondary,
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _expanded ? 'Hide reasoning' : 'Thinking...',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w400,
-                          color: widget.nomad.textSecondary,
-                        ),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
-              if (_expanded)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-                  child: _RichTextBlock(
-                    text: widget.content,
-                    nomad: widget.nomad,
-                    isUser: false,
-                  ),
+            ),
+            if (_expanded)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                child: _RichTextBlock(
+                  text: widget.content,
+                  nomad: widget.nomad,
+                  isUser: false,
                 ),
-            ],
-          ),
+              ),
+          ],
         ),
+      ),
     );
   }
 }
@@ -591,7 +623,9 @@ class _TableBlock extends StatelessWidget {
       return cells.every((c) => _separatorCheck.hasMatch(c));
     });
 
-    final headerRows = separatorIndex > 0 ? parsedRows.sublist(0, separatorIndex) : <List<String>>[];
+    final headerRows = separatorIndex > 0
+        ? parsedRows.sublist(0, separatorIndex)
+        : <List<String>>[];
     final bodyRows = separatorIndex >= 0
         ? parsedRows.sublist(separatorIndex + 1)
         : parsedRows;
@@ -599,51 +633,55 @@ class _TableBlock extends StatelessWidget {
     final allRows = [...headerRows, ...bodyRows];
     if (allRows.isEmpty) return const SizedBox.shrink();
 
-    final columnCount = allRows.map((r) => r.length).reduce((a, b) => a > b ? a : b);
+    final columnCount =
+        allRows.map((r) => r.length).reduce((a, b) => a > b ? a : b);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Container(
-          decoration: BoxDecoration(
-            border: Border.all(color: nomad.border, width: 0.5),
-            borderRadius: BorderRadius.circular(999),
-          ),
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Table(
-              defaultColumnWidth: const IntrinsicColumnWidth(),
-              border: TableBorder(
-                horizontalInside: BorderSide(color: nomad.border, width: 0.5),
-                verticalInside: BorderSide(color: nomad.border, width: 0.5),
-              ),
-              children: allRows.asMap().entries.map((entry) {
-                final rowIndex = entry.key;
-                final cells = entry.value;
-                final isHeader = rowIndex < headerRows.length;
+        decoration: BoxDecoration(
+          border: Border.all(color: nomad.border, width: 0.5),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Table(
+            defaultColumnWidth: const IntrinsicColumnWidth(),
+            border: TableBorder(
+              horizontalInside: BorderSide(color: nomad.border, width: 0.5),
+              verticalInside: BorderSide(color: nomad.border, width: 0.5),
+            ),
+            children: allRows.asMap().entries.map((entry) {
+              final rowIndex = entry.key;
+              final cells = entry.value;
+              final isHeader = rowIndex < headerRows.length;
 
-                return TableRow(
-                  decoration: BoxDecoration(
-                    color: isHeader
-                        ? nomad.textPrimary.withValues(alpha: 0.05)
-                        : (rowIndex % 2 == 0 ? nomad.surface : null),
-                  ),
-                  children: List.generate(columnCount, (colIndex) {
-                    final cellText = colIndex < cells.length ? cells[colIndex] : '';
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      child: Text(
-                        cellText,
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: isHeader ? FontWeight.w400 : FontWeight.w400,
-                          color: nomad.textPrimary,
-                          height: 1.4,
-                        ),
+              return TableRow(
+                decoration: BoxDecoration(
+                  color: isHeader
+                      ? nomad.textPrimary.withValues(alpha: 0.05)
+                      : (rowIndex % 2 == 0 ? nomad.surface : null),
+                ),
+                children: List.generate(columnCount, (colIndex) {
+                  final cellText =
+                      colIndex < cells.length ? cells[colIndex] : '';
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    child: Text(
+                      cellText,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight:
+                            isHeader ? FontWeight.w400 : FontWeight.w400,
+                        color: nomad.textPrimary,
+                        height: 1.4,
                       ),
-                    );
-                  }),
-                );
-              }).toList(),
+                    ),
+                  );
+                }),
+              );
+            }).toList(),
           ),
         ),
       ),
@@ -654,7 +692,9 @@ class _TableBlock extends StatelessWidget {
     final trimmed = row.trim();
     var content = trimmed;
     if (content.startsWith('|')) content = content.substring(1);
-    if (content.endsWith('|')) content = content.substring(0, content.length - 1);
+    if (content.endsWith('|')) {
+      content = content.substring(0, content.length - 1);
+    }
     return content.split('|').map((c) => c.trim()).toList();
   }
 }

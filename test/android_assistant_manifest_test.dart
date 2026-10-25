@@ -10,7 +10,8 @@ void main() {
   final manifest =
       File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
   final assistantXml =
-      File('android/app/src/main/res/xml/assistant_service.xml').readAsStringSync();
+      File('android/app/src/main/res/xml/assistant_service.xml')
+          .readAsStringSync();
 
   test('manifest declares the voice interaction and session services', () {
     expect(manifest, contains('android:name=".AssistantService"'));
@@ -27,11 +28,31 @@ void main() {
     expect(manifest, contains('android:name=".$simple"'));
   });
 
-  test('no recognition service is referenced or declared', () {
-    // AssistantSession runs its own SpeechRecognizer, so a RecognitionService is
-    // not required. If one is reintroduced it must be declared below.
-    expect(assistantXml, isNot(contains('recognitionService')));
-    expect(manifest, isNot(contains('AssistantRecognitionService')));
+  test(
+      'the referenced recognition service is declared and permission protected',
+      () {
+    final recognition = RegExp(r'android:recognitionService="([^"]+)"')
+        .firstMatch(assistantXml)!
+        .group(1)!;
+    expect(recognition, 'com.varun.nomad.NomadRecognitionService');
+    final service = RegExp(
+            r'<service\s+android:name="\.NomadRecognitionService"[\s\S]*?</service>')
+        .firstMatch(manifest)!
+        .group(0)!;
+    expect(service,
+        contains('android.permission.BIND_SPEECH_RECOGNITION_SERVICE'));
+    expect(service, contains('android.speech.RecognitionService'));
+  });
+
+  test('voice uses audio focus instead of changing device stream volumes', () {
+    final activity =
+        File('android/app/src/main/kotlin/com/varun/nomad/MainActivity.kt')
+            .readAsStringSync();
+    expect(activity, contains('requestAudioFocus'));
+    expect(activity, contains('abandonAudioFocusRequest'));
+    expect(activity, isNot(contains('setStreamVolume')));
+    expect(activity, isNot(contains('getStreamMaxVolume')));
+    expect(manifest, isNot(contains('ACCESS_NOTIFICATION_POLICY')));
   });
 
   test('assistant launch intents are registered on MainActivity', () {

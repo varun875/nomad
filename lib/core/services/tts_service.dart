@@ -1,298 +1,206 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:io';
-import 'package:flutter/services.dart';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
-import '../../core/utils/logger.dart';
+import 'speech_input_service.dart';
 
-class TtsService {
-  static final TtsService _instance = TtsService._internal();
-  factory TtsService() => _instance;
-  TtsService._internal() {
-    _init();
-  }
+/// One utterance at a time, owned by the voice session. Native speak futures
+/// carry completion; unscoped onComplete callbacks cannot finish a newer turn.
+class TtsService implements SpeechOutput {
+  TtsService(
+      {FlutterTts? engine,
+      this.utteranceTimeout = const Duration(seconds: 90),
+      this.initializationTimeout = const Duration(seconds: 10)})
+      : _engine = engine;
 
-  final FlutterTts _tts = FlutterTts();
-  final Queue<_TtsTask> _queue = Queue<_TtsTask>();
-  bool _isSpeaking = false;
-  bool _muted = false;
-  Completer<void>? _currentCompleter;
-  Completer<void>? _initReady;
+  FlutterTts? _engine;
+  final Duration utteranceTimeout;
+  final Duration initializationTimeout;
+  Future<bool>? _initializing;
+  Future<void> _stopping = Future.value();
+  Completer<void>? _cancelled;
+  Completer<void>? _speechError;
+  String? _locale;
+  bool _ready = false;
   int _generation = 0;
-  bool _isReady = false;
+  int _configuration = 0;
 
-  bool get isSpeaking => _isSpeaking;
-
-  /// Completes once [_init] finishes so [speak] never races engine startup.
-  Future<void> get ready => (_initReady ??= Completer<void>()).future;
-
-  Future<void> _init() async {
-    _initReady = Completer<void>();
-    try {
-      Log.d('TTS', 'Initializing...');
-      await _tts.setVolume(1.0);
-      await _tts.setLanguage("en-US");
-
-      // Pick the most natural-sounding voice the device offers, then tune the
-      // prosody for a warm, conversational delivery rather than the flat,
-      // robotic default.
-      await _selectNaturalVoice();
-      await _tts.setSpeechRate(_naturalRate());
-      await _tts.setPitch(1.05);
-
-      await _tts.awaitSpeakCompletion(true);
-
-      _tts.setCompletionHandler(() {
-        Log.d('TTS', 'Speech completed');
-        _isSpeaking = false;
-        _currentCompleter?.complete();
-        _currentCompleter = null;
-        _remuteMusicIfNeeded();
-        _processQueue();
-      });
-
-      _tts.setCancelHandler(() {
-        Log.d('TTS', 'Speech cancelled');
-        _isSpeaking = false;
-        _currentCompleter?.complete();
-        _currentCompleter = null;
-        _remuteMusicIfNeeded();
-      });
-
-      _tts.setErrorHandler((msg) {
-        Log.d('TTS', 'Speech error: $msg');
-        _isSpeaking = false;
-        // Complete normally so await speak() in chat_screen doesn't abort the reply persist.
-        _currentCompleter?.complete();
-        _currentCompleter = null;
-        _remuteMusicIfNeeded();
-        _processQueue();
-      });
-      _isReady = true;
-      Log.d('TTS', 'Initialization complete');
-    } catch (e) {
-      Log.e('TTS', 'Init error', e);
+  @override
+  Future<bool> initialize({required String localeId}) async {
+    final locale = localeId.replaceAll('_', '-');
+    if (_ready && locale == _locale) return true;
+    final inProgress = _initializing;
+    if (inProgress != null) {
+      await inProgress;
+      if (_ready && locale == _locale) return true;
     }
-    _initReady!.complete();
-  }
-
-  /// flutter_tts maps speech rate to 0..1 but engines interpret it very
-  /// differently. These values land on a relaxed, human cadence per platform.
-  double _naturalRate() {
-    if (Platform.isIOS || Platform.isMacOS) return 0.52;
-    if (Platform.isAndroid) return 0.48;
-    return 0.5;
-  }
-
-  /// Scans the installed voices and selects the warmest, most natural English
-  /// voice available, preferring premium / enhanced (Apple) and neural /
-  /// network (Google) voices over the low-quality compact defaults.
-  Future<void> _selectNaturalVoice() async {
+    final configuration = ++_configuration;
+    final operation = _configure(locale, configuration)
+        .timeout(initializationTimeout, onTimeout: () {
+      if (_configuration == configuration) {
+        ++_configuration;
+        _ready = false;
+      }
+      return false;
+    });
+    _initializing = operation;
     try {
-      final raw = await _tts.getVoices;
-      if (raw is! List) return;
+      return await operation;
+    } finally {
+      if (identical(_initializing, operation)) _initializing = null;
+    }
+  }
 
-      final voices = raw
-          .whereType<Object>()
-          .map((v) => Map<String, dynamic>.from(v as Map))
-          .where((v) =>
-              (v['locale'] ?? '').toString().toLowerCase().startsWith('en'))
-          .toList();
-      if (voices.isEmpty) return;
-
-      // A handful of voices widely regarded as warm and natural; used only as a
-      // tie-breaker on top of the quality heuristics below.
-      const preferredNames = [
-        'samantha',
-        'ava',
-        'zoe',
-        'serena',
-        'aria',
-        'jenny',
-        'libby',
-        'sonia',
-        'evie',
-        'tessa',
-        'moira',
-        'karen',
-        'nora',
-      ];
-
-      int scoreOf(Map<String, dynamic> v) {
-        final name = (v['name'] ?? '').toString().toLowerCase();
-        final locale = (v['locale'] ?? '').toString().toLowerCase();
-        var score = 0;
-
-        // Apple quality tiers.
-        if (name.contains('premium')) score += 120;
-        if (name.contains('enhanced')) score += 90;
-        if (name.contains('siri')) score += 80;
-
-        // Google / Android natural voices.
-        if (name.contains('neural')) score += 110;
-        if (name.contains('network')) score += 95;
-
-        // Generic quality field, when present.
-        final q = int.tryParse((v['quality'] ?? '').toString());
-        if (q != null) score += (q ~/ 100);
-
-        // Locale preference: US English first, then GB.
-        if (locale == 'en-us') {
-          score += 25;
-        } else if (locale == 'en-gb') {
-          score += 12;
+  Future<bool> _configure(String locale, int configuration) async {
+    _ready = false;
+    try {
+      final tts = _engine ??= FlutterTts();
+      // Android reports some engine errors only through this callback, leaving
+      // its speak Future pending. Fail that utterance instead of waiting 90s.
+      void reportFailure(Object message) {
+        final failed = _speechError;
+        if (failed != null && !failed.isCompleted) {
+          failed.completeError(StateError('Speech playback failed: $message'));
         }
-
-        // Warm, friendly tie-breaker.
-        for (final p in preferredNames) {
-          if (name.contains(p)) {
-            score += 18;
-            break;
-          }
-        }
-
-        // Penalize known low-fidelity voices.
-        if (name.contains('compact')) score -= 40;
-        if (name.contains('eloquence')) score -= 70;
-
-        return score;
       }
 
-      voices.sort((a, b) => scoreOf(b).compareTo(scoreOf(a)));
-      final best = voices.first;
-
-      final voiceArg = <String, String>{
-        'name': (best['name'] ?? '').toString(),
-        'locale': (best['locale'] ?? 'en-US').toString(),
-      };
-      await _tts.setVoice(voiceArg);
-      Log.d(
-          'TTS', 'Selected voice: ${voiceArg['name']} (${voiceArg['locale']})');
-    } catch (e) {
-      Log.d('TTS', 'voice selection failed: $e');
+      tts.setErrorHandler(
+          (message) => reportFailure(message ?? 'speech engine error'));
+      tts.setCancelHandler(() => reportFailure('speech was interrupted'));
+      await tts.awaitSpeakCompletion(true);
+      if (_configuration != configuration) return false;
+      final language = await tts.setLanguage(locale);
+      if (_configuration != configuration ||
+          language == false ||
+          language == 0) {
+        return false;
+      }
+      await tts.setVolume(1.0); // Utterance gain, never the device's volume.
+      await tts.setSpeechRate(Platform.isIOS || Platform.isMacOS ? 0.52 : 0.48);
+      await tts.setPitch(1.0);
+      if (Platform.isIOS) {
+        await tts.setIosAudioCategory(
+          IosTextToSpeechAudioCategory.playAndRecord,
+          [
+            IosTextToSpeechAudioCategoryOptions.defaultToSpeaker,
+            IosTextToSpeechAudioCategoryOptions.allowBluetooth,
+            IosTextToSpeechAudioCategoryOptions.duckOthers,
+          ],
+          IosTextToSpeechAudioMode.voicePrompt,
+        );
+      }
+      if (_configuration != configuration) return false;
+      await _selectVoice(tts, locale, configuration);
+      if (_configuration != configuration) return false;
+      _locale = locale;
+      _ready = true;
+      return true;
+    } catch (error) {
+      debugPrint('Could not initialize spoken replies: $error');
+      return false;
     }
   }
 
-  void setMuted(bool muted) {
-    _muted = muted;
-    if (muted) {
-      stop();
+  Future<void> _selectVoice(
+      FlutterTts tts, String locale, int configuration) async {
+    try {
+      final raw = await tts.getVoices;
+      if (raw is! List || _configuration != configuration) return;
+      final target = locale.toLowerCase();
+      final language = target.split('-').first;
+      final voices =
+          raw.whereType<Map>().map(Map<String, dynamic>.from).where((voice) {
+        final id =
+            '${voice['locale'] ?? ''}'.replaceAll('_', '-').toLowerCase();
+        final network = '${voice['network_required']}'.toLowerCase();
+        final features = '${voice['features'] ?? ''}'.toLowerCase();
+        return id.split('-').first == language &&
+            network != 'true' &&
+            network != '1' &&
+            !features.contains('notinstalled') &&
+            !'${voice['name']}'.toLowerCase().contains('network') &&
+            voice['notInstalled'] != true &&
+            voice['notInstalled'] != 'true';
+      }).toList();
+      int score(Map<String, dynamic> voice) {
+        final id = '${voice['locale']}'.replaceAll('_', '-').toLowerCase();
+        final name = '${voice['name']}'.toLowerCase();
+        final quality = '${voice['quality']}'.toLowerCase();
+        const qualities = {
+          'very_high': 500,
+          'high': 400,
+          'normal': 300,
+          'low': 200,
+          'very_low': 100
+        };
+        return (id == target ? 1000 : 0) +
+            (int.tryParse(quality) ?? qualities[quality] ?? 0) +
+            (name.contains('enhanced') || name.contains('premium') ? 100 : 0);
+      }
+
+      voices.sort((a, b) => score(b).compareTo(score(a)));
+      if (voices.isNotEmpty) {
+        await tts.setVoice({
+          'name': '${voices.first['name']}',
+          'locale': '${voices.first['locale']}',
+        });
+      }
+    } catch (_) {
+      // Voice enumeration is optional; retain the engine's locale default.
     }
   }
 
+  @override
   Future<void> speak(String text) async {
-    if (_muted || text.isEmpty) return;
-    await ready;
-    // Initialization failures are logged in _init; don't call into a partially
-    // configured platform engine or leave a queued task waiting for callbacks.
-    if (_muted || !_isReady) return;
-
-    final completer = Completer<void>();
-    _queue.add(_TtsTask(text, completer));
-
-    if (!_isSpeaking) {
-      _processQueue();
-    }
-
-    return completer.future;
-  }
-
-  Future<void> _processQueue() async {
-    if (_queue.isEmpty || _isSpeaking || _muted) {
-      if (_queue.isEmpty && !_isSpeaking) {
-        _remuteMusicIfNeeded();
-      }
-      return;
-    }
-
-    _isSpeaking = true;
-    final task = _queue.removeFirst();
-    _currentCompleter = task.completer;
+    if (text.trim().isEmpty) return;
+    if (!_ready) throw StateError('Spoken replies are not available.');
     final generation = _generation;
-
+    await _stopping;
+    if (generation != _generation) return;
+    final cancelled = Completer<void>();
+    final failed = Completer<void>();
+    _cancelled = cancelled;
+    _speechError = failed;
     try {
-      // Ensure music is unmuted so user can hear TTS
-      await _unmuteMusic();
-
-      // stop() may have run while Android's audio channel was being prepared.
-      // Do not let that stale task start after cancellation.
-      if (generation != _generation || _muted) {
-        if (!task.completer.isCompleted) task.completer.complete();
-        if (identical(_currentCompleter, task.completer)) {
-          _currentCompleter = null;
-          _isSpeaking = false;
+      // Android focus is held by the whole voice session. Asking the TTS plugin
+      // for separate focus on each sentence would interrupt that same session.
+      final playback = _engine!.speak(text).then<void>((result) {
+        if (result == 0 || result == false) {
+          throw StateError('The speech engine could not play this reply.');
         }
-        return;
+      });
+      await Future.any([playback, cancelled.future, failed.future])
+          .timeout(utteranceTimeout);
+    } on TimeoutException {
+      _ready = false;
+      await stop();
+      throw StateError('The speech engine stopped responding.');
+    } catch (_) {
+      if (generation == _generation) {
+        _ready = false;
+        await stop();
       }
-
-      Log.d('TTS', 'Speaking: ${task.text}');
-      await _tts.speak(task.text);
-    } catch (e) {
-      if (!task.completer.isCompleted) task.completer.complete();
-      if (identical(_currentCompleter, task.completer)) {
-        _isSpeaking = false;
-        _currentCompleter = null;
-        _processQueue();
-      }
+      rethrow;
+    } finally {
+      if (identical(_cancelled, cancelled)) _cancelled = null;
+      if (identical(_speechError, failed)) _speechError = null;
     }
   }
 
-  bool _enableAutoMute = false;
-  bool _musicMuted = false;
-
-  bool get enableAutoMute => _enableAutoMute;
-  set enableAutoMute(bool value) {
-    _enableAutoMute = value;
-    // Entering live mode mutes music natively elsewhere; mirror that here so
-    // the first utterance knows it needs to duck the music back in.
-    _musicMuted = value;
-  }
-
-  Future<void> _unmuteMusic() async {
-    // Only relevant on Android, and only when music is actually ducked. This
-    // avoids a needless delay before every sentence (which made speech feel
-    // laggy and choppy, especially on iOS/macOS where the channel is a no-op).
-    if (!_musicMuted || !Platform.isAndroid) return;
-    try {
-      // Brief pause so any lingering STT start beep finishes first.
-      await Future.delayed(const Duration(milliseconds: 250));
-      const channel = MethodChannel('com.varun.nomad/storage');
-      await channel.invokeMethod('unmuteMusicStream');
-    } catch (_) {}
-    _musicMuted = false;
-  }
-
-  Future<void> _remuteMusicIfNeeded() async {
-    if (!_enableAutoMute) return;
-    // Keep music ducked continuously across a multi-sentence response; only
-    // restore it once the whole utterance queue has drained.
-    if (_queue.isNotEmpty) return;
-    if (Platform.isAndroid) {
-      try {
-        const channel = MethodChannel('com.varun.nomad/storage');
-        await channel.invokeMethod('muteMusicStream');
-      } catch (_) {}
-    }
-    _musicMuted = true;
-  }
-
-  Future<void> stop() async {
+  @override
+  Future<void> stop() {
     ++_generation;
-    for (final task in _queue) {
-      if (!task.completer.isCompleted) task.completer.complete();
-    }
-    _queue.clear();
-    final current = _currentCompleter;
-    _currentCompleter = null;
-    _isSpeaking = false;
-    if (current != null && !current.isCompleted) current.complete();
-    await _tts.stop();
+    final cancelled = _cancelled;
+    _cancelled = null;
+    _speechError = null;
+    if (cancelled != null && !cancelled.isCompleted) cancelled.complete();
+    final engine = _engine;
+    if (engine == null) return _stopping;
+    _stopping = _stopping.catchError((Object _) {}).then((_) async {
+      await engine.stop().timeout(const Duration(seconds: 3));
+    });
+    return _stopping;
   }
-}
-
-class _TtsTask {
-  final String text;
-  final Completer<void> completer;
-  _TtsTask(this.text, this.completer);
 }

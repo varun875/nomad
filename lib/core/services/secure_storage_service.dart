@@ -22,24 +22,33 @@ class SecureStorageService {
   static const _storage = FlutterSecureStorage();
 
   static List<int>? _cachedKey;
+  static Future<List<int>>? _inFlightKeyFuture;
+  static final Map<String, Future<Box>> _inFlightBoxes = {};
 
   /// Returns the persistent 32-byte AES key from the platform keychain,
   /// generating and storing one on first launch.
   ///
-  /// Unlike before, keychain read/write failures are no longer swallowed: a
-  /// failed write would otherwise generate a throwaway key on every launch,
-  /// making existing boxes unreadable.
-  static Future<List<int>> _getOrCreateKey() async {
-    if (_cachedKey != null) return _cachedKey!;
-    final existing = await _storage.read(key: _keyName);
-    if (existing != null && existing.isNotEmpty) {
-      _cachedKey = base64Decode(existing);
-      return _cachedKey!;
+  /// Concurrent callers share the same in-flight Future to prevent redundant
+  /// platform-channel round trips before the key is cached.
+  static Future<List<int>> _getOrCreateKey() {
+    if (_cachedKey != null) return Future.value(_cachedKey!);
+    return _inFlightKeyFuture ??= _readOrCreateKeyInternal();
+  }
+
+  static Future<List<int>> _readOrCreateKeyInternal() async {
+    try {
+      final existing = await _storage.read(key: _keyName);
+      if (existing != null && existing.isNotEmpty) {
+        _cachedKey = base64Decode(existing);
+        return _cachedKey!;
+      }
+      final key = List<int>.generate(32, (_) => Random.secure().nextInt(256));
+      await _storage.write(key: _keyName, value: base64Encode(key));
+      _cachedKey = key;
+      return key;
+    } finally {
+      _inFlightKeyFuture = null;
     }
-    final key = List<int>.generate(32, (_) => Random.secure().nextInt(256));
-    await _storage.write(key: _keyName, value: base64Encode(key));
-    _cachedKey = key;
-    return key;
   }
 
   static Future<HiveAesCipher> hiveCipher() async {
@@ -49,8 +58,23 @@ class SecureStorageService {
 
   /// Opens [name] with AES encryption, or throws
   /// [EncryptionUnavailableException] if the cipher or box cannot be opened.
-  /// Never opens the box unencrypted.
+  /// Never opens the box unencrypted. Concurrent requests for the same box share
+  /// a single in-flight operation.
   static Future<Box> openEncryptedBox(String name) async {
+    if (Hive.isBoxOpen(name)) return Hive.box(name);
+    final inFlight = _inFlightBoxes[name];
+    if (inFlight != null) return inFlight;
+
+    final future = _openEncryptedBoxInternal(name);
+    _inFlightBoxes[name] = future;
+    try {
+      return await future;
+    } finally {
+      _inFlightBoxes.remove(name);
+    }
+  }
+
+  static Future<Box> _openEncryptedBoxInternal(String name) async {
     if (Hive.isBoxOpen(name)) return Hive.box(name);
     final HiveAesCipher cipher;
     try {

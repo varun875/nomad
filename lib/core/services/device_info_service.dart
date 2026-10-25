@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:flutter/services.dart';
 
+typedef DeviceMemory = ({int availableBytes, bool lowMemory});
+
 /// Single source of truth for device hardware info.
 ///
 /// Consolidates the RAM-detection logic that used to live in both
@@ -8,6 +10,21 @@ import 'package:flutter/services.dart';
 /// the `sysctl`/`free`/`powershell` probes on desktop.
 class DeviceInfo {
   static const _channel = MethodChannel('com.varun.nomad/storage');
+
+  /// A fresh Android memory-pressure reading, not the device's advertised RAM.
+  /// Unsupported platforms return null rather than pretending memory is free.
+  static Future<DeviceMemory?> memorySnapshot() async {
+    try {
+      final value =
+          await _channel.invokeMapMethod<String, dynamic>('getMemoryInfo');
+      final available = value?['availableBytes'];
+      final lowMemory = value?['lowMemory'];
+      if (available is! int || available < 0 || lowMemory is! bool) return null;
+      return (availableBytes: available, lowMemory: lowMemory);
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// Synchronous, best-effort total physical RAM in MB, or null if it could
   /// not be detected. Used where a synchronous value is required (e.g. GPU

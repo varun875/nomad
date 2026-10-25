@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:llamadart/llamadart.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'device_info_service.dart';
@@ -12,14 +13,45 @@ class InferenceService {
   static const generationThreadsPreference = 'inferenceGenerationThreads';
   static final InferenceService _instance = InferenceService._internal();
   factory InferenceService() => _instance;
-  InferenceService._internal() {
+  InferenceService._internal({
+    LlamaEngine Function()? engineFactory,
+    bool? mobile,
+    Future<int> Function()? readRam,
+    Future<DeviceMemory?> Function()? readMemory,
+  })  : _engineFactory = engineFactory ?? (() => LlamaEngine(LlamaBackend())),
+        _isMobile = mobile ?? (Platform.isAndroid || Platform.isIOS),
+        _readRam = readRam ?? ModelService.getDeviceRAM,
+        _readMemory = readMemory ?? DeviceInfo.memorySnapshot {
     LlamaEngine.configureLogging(level: LlamaLogLevel.none);
   }
 
+  @visibleForTesting
+  InferenceService.forTesting({
+    required LlamaEngine Function() engineFactory,
+    int ramGB = 4,
+    bool mobile = true,
+    Future<DeviceMemory?> Function()? readMemory,
+  }) : this._internal(
+          engineFactory: engineFactory,
+          mobile: mobile,
+          readRam: () async => ramGB,
+          readMemory: readMemory ?? (() async => null),
+        );
+
+  final LlamaEngine Function() _engineFactory;
+  final bool _isMobile;
+  final Future<int> Function() _readRam;
+  final Future<DeviceMemory?> Function() _readMemory;
   LlamaEngine? _engine;
   String? _loadedModelPath;
   String? _availableMmProjPath;
   String? _loadedMmProjPath;
+  bool _lowRamModel = false;
+  bool _generating = false;
+  bool _releaseRequested = false;
+  Future<void> _modelLifecycle = Future<void>.value();
+
+  bool get isGenerating => _generating;
 
   double _lastPromptTokPerSec = 0;
   double _lastOutputTokPerSec = 0;
@@ -208,8 +240,10 @@ class InferenceService {
       }
     }
     final processors = Platform.numberOfProcessors;
-    final threads =
-        resolveOptimalThreads(constrained: constrained, processors: processors, performanceCores: performanceCores);
+    final threads = resolveOptimalThreads(
+        constrained: constrained,
+        processors: processors,
+        performanceCores: performanceCores);
     Log.d(
       'Inference',
       'Threads: $performanceCores perf-cores/$processors cores -> $threads threads',
@@ -217,26 +251,53 @@ class InferenceService {
     return threads;
   }
 
-  /// Serializes model loads so warm-up raced with a first message never loads
-  /// the same engine twice (which spiked memory and could crash natively).
-  Future<String> _activeLoad = Future<String>.value('');
-
-  Future<String> loadModel(String localPath) async {
-    final result = _activeLoad.then((_) => _loadModelInternal(localPath));
-    // Chain the current load so concurrent callers wait for it instead of
-    // double-loading. On failure reset the queue so the next load can
-    // proceed, but propagate the error to this caller (don't mask as success).
-    _activeLoad = result.then((v) => v, onError: (Object e, StackTrace s) {
-      _activeLoad = Future<String>.value('');
-      // Re-throw to keep error for chained catchError, but _activeLoad is reset.
-      throw e;
-    });
+  Future<T> _withModelLifecycle<T>(Future<T> Function() action) {
+    final result = _modelLifecycle.then((_) => action());
+    // The caller gets the error; the queue itself must remain usable.
+    _modelLifecycle =
+        result.then<void>((_) {}, onError: (Object _, StackTrace __) {});
     return result;
+  }
+
+  Future<String> loadModel(String localPath) {
+    if (_generating) {
+      return Future.error(StateError(
+          'Finish or stop the current response before loading another model.'));
+    }
+    return _withModelLifecycle(() => _loadModelInternal(localPath));
+  }
+
+  /// Conservative preflight estimates, not a promise that an allocation fits.
+  /// mmap already defaults to on; weights still need resident working memory.
+  static String? allocationError({
+    required int ramGB,
+    required int allocationBytes,
+    int? requiredRAM,
+    DeviceMemory? memory,
+    bool projector = false,
+  }) {
+    if (ramGB > 4) return null;
+    const mib = 1024 * 1024;
+    if (!projector &&
+        ((requiredRAM != null && requiredRAM > ramGB) ||
+            allocationBytes > 1024 * mib)) {
+      return 'This model is too large for the safe profile on a $ramGB GB phone. '
+          'Choose Nomad Nano or Nomad Lite. Your downloaded file is kept.';
+    }
+    final reserve = (projector ? 256 : 512) * mib;
+    if (memory != null &&
+        (memory.lowMemory ||
+            memory.availableBytes < allocationBytes + reserve)) {
+      return projector
+          ? 'Not enough free RAM for image processing. Close other apps, use Nomad Nano, or send text only.'
+          : 'Not enough free RAM to load this model safely. Close other apps or choose Nomad Nano.';
+    }
+    return null;
   }
 
   Future<String> _loadModelInternal(String localPath) async {
     final stat = await File(localPath).stat();
-    if (stat.type == FileSystemEntityType.notFound) {
+    if (stat.type != FileSystemEntityType.file) {
       throw Exception('Model file not found: $localPath');
     }
 
@@ -244,9 +305,29 @@ class InferenceService {
       return localPath;
     }
 
-    if (_engine != null) {
-      await _engine!.dispose();
-      _engine = null;
+    final ram = _isMobile ? await _readRam() : 0;
+    int? requiredRAM;
+    final modelId =
+        localPath.replaceAll('\\', '/').split('/').last.replaceAll('.gguf', '');
+    for (final model in ModelService.getAllModels()) {
+      if (model.id == modelId) requiredRAM = model.requiredRAM;
+    }
+    if (_isMobile) {
+      final error = allocationError(
+          ramGB: ram, allocationBytes: stat.size, requiredRAM: requiredRAM);
+      if (error != null) throw StateError(error);
+    }
+
+    // Free the old context before allocating a replacement or checking free RAM.
+    await _unloadModelInternal();
+    if (_isMobile && ram <= 4) {
+      final error = allocationError(
+        ramGB: ram,
+        allocationBytes: stat.size,
+        requiredRAM: requiredRAM,
+        memory: await _readMemory(),
+      );
+      if (error != null) throw StateError(error);
     }
 
     final fileSizeMB = stat.size ~/ (1024 * 1024);
@@ -255,8 +336,7 @@ class InferenceService {
 
     // Dynamically scale context size based on platform and available RAM to optimize memory on mobile
     int ctx = 2048;
-    if (Platform.isAndroid || Platform.isIOS) {
-      final ram = await ModelService.getDeviceRAM();
+    if (_isMobile) {
       if (ram <= 4) {
         ctx = 2048; // Safe fallback to prevent OOM crashes on low-end devices
       } else if (ram <= 8) {
@@ -272,17 +352,13 @@ class InferenceService {
       ctx = fileSizeMB < 300 ? 4096 : (fileSizeMB < 1000 ? 6144 : 8192);
     }
 
-    final gpuLayers = _detectOptimalGpuLayers();
-
-    _engine = LlamaEngine(LlamaBackend());
+    final gpuLayers = _isMobile ? 0 : _detectOptimalGpuLayers();
 
     // Configure model with optimized parameters:
     // - On mobile: enable Flash Attention and Q8_0 KV Cache quantization to reduce RAM by 50%
-    final isMobile = Platform.isAndroid || Platform.isIOS;
-    final constrained = isMobile &&
-        (PerformanceService.instance.isConstrained ||
-            PerformanceService.instance.deviceRamGb <= 8);
-    final lowEnd = isMobile && PerformanceService.instance.isLowEnd;
+    final isMobile = _isMobile;
+    final constrained = isMobile && ram <= 8;
+    final lowEnd = isMobile && ram <= 4;
     final threadOverride = await _generationThreadOverride();
     final generationThreads =
         threadOverride ?? _optimalGenerationThreads(constrained);
@@ -299,54 +375,70 @@ class InferenceService {
     final microBatchSize = armv7
         ? 32
         : (lowEnd || isLargeConstrained ? 64 : (constrained ? 128 : 512));
-    await _engine!.loadModel(
-      localPath,
-      modelParams: ModelParams(
-        contextSize: ctx,
-        gpuLayers: gpuLayers,
-        // Prompt eval decodes a whole batch at once and parallelizes cleanly
-        // across every core (big + little) for fast time-to-first-token, while
-        // generation stays pinned to the big cores only: decode is bandwidth
-        // bound and spilling to little cores both slows it and — on MediaTek —
-        // can collapse throughput ~100x (llama.cpp #21763) and heat the chip.
-        numberOfThreads: generationThreads,
-        numberOfThreadsBatch: batchThreads,
-        batchSize: batchSize,
-        microBatchSize: microBatchSize,
-        flashAttention: isMobile ? FlashAttention.enabled : FlashAttention.auto,
-        cacheTypeK: isMobile ? KvCacheType.q8_0 : KvCacheType.f16,
-        cacheTypeV: isMobile ? KvCacheType.q8_0 : KvCacheType.f16,
-      ),
-    );
+    final engine = _engineFactory();
+    try {
+      await engine.loadModel(
+        localPath,
+        modelParams: ModelParams(
+          contextSize: ctx,
+          gpuLayers: gpuLayers,
+          // Prompt eval decodes a whole batch at once and parallelizes cleanly
+          // across every core (big + little) for fast time-to-first-token, while
+          // generation stays pinned to the big cores only: decode is bandwidth
+          // bound and spilling to little cores both slows it and — on MediaTek —
+          // can collapse throughput ~100x (llama.cpp #21763) and heat the chip.
+          numberOfThreads: generationThreads,
+          numberOfThreadsBatch: batchThreads,
+          batchSize: batchSize,
+          microBatchSize: microBatchSize,
+          flashAttention:
+              isMobile ? FlashAttention.enabled : FlashAttention.auto,
+          cacheTypeK: isMobile ? KvCacheType.q8_0 : KvCacheType.f16,
+          cacheTypeV: isMobile ? KvCacheType.q8_0 : KvCacheType.f16,
+        ),
+      );
 
-    Log.d(
-      'Inference',
-      'Model loaded: ${localPath.split('/').last} (${fileSizeMB}MB) '
-      'backend=${Platform.isAndroid ? 'cpu' : 'auto'} '
-      'ctx=$ctx threads=$generationThreads'
-      '${threadOverride == null ? '' : ' (override)'} '
-      'batchThreads=$batchThreads '
-      'batch=$batchSize ubatch=$microBatchSize gpuLayers=$gpuLayers '
-      'fa=${isMobile ? 'on' : 'auto'} kv=q8_0 armv7=$armv7',
-    );
+      Log.d(
+        'Inference',
+        'Model loaded: ${localPath.split('/').last} (${fileSizeMB}MB) '
+            'backend=${Platform.isAndroid ? 'cpu' : 'auto'} '
+            'ctx=$ctx threads=$generationThreads'
+            '${threadOverride == null ? '' : ' (override)'} '
+            'batchThreads=$batchThreads '
+            'batch=$batchSize ubatch=$microBatchSize gpuLayers=$gpuLayers '
+            'fa=${isMobile ? 'on' : 'auto'} kv=q8_0 armv7=$armv7',
+      );
 
-    // On low-RAM phones the F16 vision encoder (~0.5-1GB) competes with the
-    // model for memory even during text-only chats. Defer it until the first
-    // image message instead of preloading it eagerly.
-    _availableMmProjPath = null;
-    _loadedMmProjPath = null;
-    if (hasVision) {
-      if (isMobile && constrained) {
-        _availableMmProjPath = mmProjPath;
-      } else {
-        await _engine!.loadMultimodalProjector(mmProjPath);
-        _loadedMmProjPath = mmProjPath;
+      // On low-RAM phones the F16 vision encoder (~0.5-1GB) competes with the
+      // model for memory even during text-only chats. Defer it until the first
+      // image message instead of preloading it eagerly.
+      String? availableMmProjPath;
+      String? loadedMmProjPath;
+      if (hasVision) {
+        if (isMobile && constrained) {
+          availableMmProjPath = mmProjPath;
+        } else {
+          await engine.loadMultimodalProjector(mmProjPath);
+          loadedMmProjPath = mmProjPath;
+        }
       }
-    }
 
-    _loadedModelPath = localPath;
-    _contextSize = ctx;
-    return localPath;
+      // Publish only a fully initialized engine; failed loads never look ready.
+      _engine = engine;
+      _availableMmProjPath = availableMmProjPath;
+      _loadedMmProjPath = loadedMmProjPath;
+      _loadedModelPath = localPath;
+      _contextSize = ctx;
+      _lowRamModel = lowEnd;
+      return localPath;
+    } catch (_) {
+      try {
+        await engine.dispose();
+      } catch (error) {
+        Log.e('Inference', 'Failed to clean up a model load', error);
+      }
+      rethrow;
+    }
   }
 
   /// Pre-warm the engine by loading the model in the background.
@@ -354,8 +446,10 @@ class InferenceService {
   Future<void> warmUp(String modelId) async {
     // Loads the last-used model in the background so it's ready.
     try {
+      if (_isMobile && await _readRam() <= 4) return;
       final directory = await ModelService.getModelDirectory();
-      final modelPath = '${directory.path}/${modelId.replaceAll('/', '_')}.gguf';
+      final modelPath =
+          '${directory.path}/${modelId.replaceAll('/', '_')}.gguf';
       if (await File(modelPath).exists()) {
         await loadModel(modelPath);
       }
@@ -364,14 +458,59 @@ class InferenceService {
     }
   }
 
-  Future<void> unloadModel() async {
-    if (_engine != null) {
-      await _engine!.dispose();
-      _engine = null;
-    }
+  /// A memory-pressure or settings request never disposes an active decode.
+  Future<void> unloadModel() {
+    _releaseRequested = true;
+    if (_generating) return Future<void>.value();
+    return _withModelLifecycle(() async {
+      _releaseRequested = false;
+      await _unloadModelInternal();
+    });
+  }
+
+  Future<void> _unloadModelInternal() async {
+    final engine = _engine;
+    _engine = null;
     _loadedModelPath = null;
     _availableMmProjPath = null;
     _loadedMmProjPath = null;
+    _contextSize = null;
+    _lowRamModel = false;
+    await engine?.dispose();
+  }
+
+  Future<void> _finishGeneration() async {
+    try {
+      await _withModelLifecycle(() async {
+        if (_releaseRequested) {
+          _releaseRequested = false;
+          await _unloadModelInternal();
+        } else if (_lowRamModel && _loadedMmProjPath != null) {
+          final projector = _loadedMmProjPath;
+          try {
+            await _engine!.unloadMultimodalProjector();
+            _loadedMmProjPath = null;
+            _availableMmProjPath = projector;
+          } catch (_) {
+            // If projector cleanup fails, don't keep a partly freed engine.
+            await _unloadModelInternal();
+            rethrow;
+          }
+        }
+      });
+    } catch (error) {
+      Log.e('Inference', 'Native resource cleanup failed', error);
+    } finally {
+      _generating = false;
+      // Pressure may arrive while projector cleanup is awaiting native code.
+      if (_releaseRequested) {
+        try {
+          await unloadModel();
+        } catch (error) {
+          Log.e('Inference', 'Deferred model cleanup failed', error);
+        }
+      }
+    }
   }
 
   /// Create a completion stream from pre-built messages and tools.
@@ -383,7 +522,9 @@ class InferenceService {
     double temp = 0.0,
   }) {
     try {
-      if (_loadedModelPath != localPath || _engine == null) return null;
+      if (_generating || _loadedModelPath != localPath || _engine == null) {
+        return null;
+      }
 
       const stopSequences = [
         "<|im_end|>",
@@ -400,7 +541,21 @@ class InferenceService {
         penalty: 1.0,
       );
 
-      return _engine!.create(messages, params: params, tools: tools);
+      Stream<LlamaCompletionChunk> run() async* {
+        if (_generating) throw StateError('Another response is still running.');
+        _generating = true;
+        try {
+          await _modelLifecycle;
+          if (_loadedModelPath != localPath || _engine == null) {
+            throw StateError('Load the selected model before generating.');
+          }
+          yield* _engine!.create(messages, params: params, tools: tools);
+        } finally {
+          await _finishGeneration();
+        }
+      }
+
+      return run();
     } catch (e) {
       return null;
     }
@@ -443,15 +598,17 @@ class InferenceService {
     List<String>? imagePaths,
     List<ToolDefinition>? tools,
   }) async* {
-    if (localPath == null || !(await File(localPath).exists())) {
-      yield "Error: Local model file not found at $localPath.";
+    if (_generating) {
+      yield 'Error: Another response is still running. Finish or stop it before sending again.';
       return;
     }
-
+    _generating = true;
     try {
-      if (_loadedModelPath != localPath) {
-        await loadModel(localPath);
+      if (localPath == null || !(await File(localPath).exists())) {
+        yield "Error: Local model file not found at $localPath.";
+        return;
       }
+      await _withModelLifecycle(() => _loadModelInternal(localPath));
 
       if (_engine == null) {
         yield "Error: Failed to load model engine.";
@@ -461,6 +618,10 @@ class InferenceService {
       // Load the vision encoder lazily on low-RAM phones: the mmproj was
       // deferred at model load time and is only needed for image messages.
       if (imagePaths != null && imagePaths.isNotEmpty) {
+        if (_lowRamModel && imagePaths.length > 1) {
+          yield 'Error: Use one image at a time on a low-memory phone.';
+          return;
+        }
         final mmProjPath = localPath.replaceAll('.gguf', '.mmproj');
         final visionAvailable = _availableMmProjPath != null ||
             _loadedMmProjPath != null ||
@@ -470,6 +631,18 @@ class InferenceService {
           return;
         }
         if (_availableMmProjPath != null && _loadedMmProjPath == null) {
+          if (_lowRamModel) {
+            final error = allocationError(
+              ramGB: await _readRam(),
+              allocationBytes: await File(_availableMmProjPath!).length(),
+              memory: await _readMemory(),
+              projector: true,
+            );
+            if (error != null) {
+              yield 'Error: $error';
+              return;
+            }
+          }
           await _engine!.loadMultimodalProjector(_availableMmProjPath!);
           _loadedMmProjPath = _availableMmProjPath;
         }
@@ -537,7 +710,7 @@ class InferenceService {
         "<|endoftext|>",
       ];
 
-      final lowEnd = PerformanceService.instance.isLowEnd;
+      final lowEnd = _lowRamModel;
       final constrained = PerformanceService.instance.isConstrained;
       final baseParams = GenerationParams(
         temp: 0.0,
@@ -590,8 +763,8 @@ class InferenceService {
                   Log.d(
                     'Inference',
                     'TTFT ${ttftMs}ms '
-                    '($estimatedPromptTokens prompt tokens -> '
-                    '${_lastPromptTokPerSec.toStringAsFixed(1)} t/s)',
+                        '($estimatedPromptTokens prompt tokens -> '
+                        '${_lastPromptTokPerSec.toStringAsFixed(1)} t/s)',
                   );
                 }
                 _lastPromptTokens = estimatedPromptTokens;
@@ -696,20 +869,21 @@ class InferenceService {
       // includes prompt evaluation/TTFT, which makes fast decoders look slow
       // whenever the conversation history is long.
       final elapsedMs = outputStopwatch.elapsedMilliseconds;
-      final tokenCount = outputChars == 0
-          ? 0
-          : (outputChars / 3.5).round().clamp(1, 1 << 31);
+      final tokenCount =
+          outputChars == 0 ? 0 : (outputChars / 3.5).round().clamp(1, 1 << 31);
       if (elapsedMs > 0 && tokenCount > 0) {
         _lastOutputTokPerSec = tokenCount / (elapsedMs / 1000.0);
         _lastOutputTokens = tokenCount;
         Log.d(
           'Inference',
           'Generation $tokenCount tokens in ${elapsedMs}ms '
-          '(${_lastOutputTokPerSec.toStringAsFixed(1)} t/s)',
+              '(${_lastOutputTokPerSec.toStringAsFixed(1)} t/s)',
         );
       }
     } catch (e) {
       yield "Error: ${e.toString()}";
+    } finally {
+      await _finishGeneration();
     }
   }
 }

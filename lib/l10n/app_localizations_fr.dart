@@ -30,7 +30,7 @@ class AppLocalizationsFr extends AppLocalizations {
   String get clearCache => 'Vider le cache';
 
   @override
-  String get removeTemporaryFiles => 'Supprimer les fichiers temporaires';
+  String get removeTemporaryFiles => 'Vider les aperçus et messages en cache';
 
   @override
   String get aboutNomad => 'À propos de Nomad';
@@ -63,7 +63,7 @@ class AppLocalizationsFr extends AppLocalizations {
   String get clearCacheQuestion => 'Vider le cache ?';
 
   @override
-  String get clearCacheMessage => 'Cela ne supprime que les fichiers temporaires. Vos modèles téléchargés et vos chats ne seront pas affectés.';
+  String get clearCacheMessage => 'Cela vide les aperçus et les messages formatés en cache. Vos modèles, chats, créations, souvenirs, pièces jointes et paramètres sont conservés.';
 
   @override
   String get deleteModelQuestion => 'Supprimer le modèle ?';

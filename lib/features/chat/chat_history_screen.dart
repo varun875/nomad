@@ -7,35 +7,39 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/models/chat_session.dart';
+import '../../core/constants/responsive.dart';
 import '../../core/theme/nomad_theme.dart';
 import '../../core/providers/model_provider.dart';
 import '../../core/widgets/nomad_animations.dart';
+import '../../core/widgets/nomad_widgets.dart';
 import '../../l10n/app_localizations.dart';
 import 'chat_screen.dart';
 
 class ChatHistoryScreen extends ConsumerStatefulWidget {
-  const ChatHistoryScreen({super.key});
+  const ChatHistoryScreen({super.key, this.currentLocation});
+
+  final String? currentLocation;
 
   @override
   ConsumerState<ChatHistoryScreen> createState() => _ChatHistoryScreenState();
 }
 
 class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
-  String? _currentConversationId;
   final Map<String, GlobalKey> _conversationKeys = {};
 
   void _startNewChat() {
-    setState(() => _currentConversationId = null);
     ref.read(chatMessagesProvider.notifier).clear();
     context.go('/home');
   }
 
   void _selectConversation(ChatSession conv) {
-    setState(() => _currentConversationId = conv.id);
-    if (conv.modelId != null) {
-      ref.read(selectedModelIdProvider.notifier).select(conv.modelId);
+    final chat = ref.read(chatMessagesProvider.notifier);
+    if (chat.conversationId != conv.id) {
+      if (conv.modelId != null) {
+        ref.read(selectedModelIdProvider.notifier).select(conv.modelId);
+      }
+      chat.openConversation(conv);
     }
-    ref.read(chatMessagesProvider.notifier).setMessages(conv.messages);
     context.go('/home');
   }
 
@@ -48,7 +52,9 @@ class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: nomad.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(NomadRadii.dialog)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(NomadRadii.dialog),
+        ),
         title: Text(
           AppLocalizations.of(context)!.renameChat,
           style: textTheme.headlineMedium,
@@ -59,7 +65,9 @@ class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
           style: textTheme.bodyLarge,
           decoration: InputDecoration(
             hintText: AppLocalizations.of(context)!.chatName,
-            hintStyle: textTheme.bodyLarge?.copyWith(color: nomad.textSecondary),
+            hintStyle: textTheme.bodyLarge?.copyWith(
+              color: nomad.textSecondary,
+            ),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(999),
               borderSide: BorderSide(color: nomad.border),
@@ -120,7 +128,9 @@ class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: nomad.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(NomadRadii.dialog)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(NomadRadii.dialog),
+        ),
         title: Text(
           '${AppLocalizations.of(context)!.delete} "${conv.title}"?',
           style: textTheme.headlineMedium,
@@ -139,6 +149,10 @@ class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
           TextButton(
             onPressed: () {
               HapticFeedback.lightImpact();
+              if (ref.read(chatMessagesProvider.notifier).conversationId ==
+                  conv.id) {
+                ref.read(chatMessagesProvider.notifier).clear();
+              }
               ref
                   .read(conversationsProvider.notifier)
                   .deleteConversation(conv.id);
@@ -157,7 +171,11 @@ class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
     );
   }
 
-  void _showContextMenu(BuildContext context, RenderBox renderBox, ChatSession conv) {
+  void _showContextMenu(
+    BuildContext context,
+    RenderBox renderBox,
+    ChatSession conv,
+  ) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     final textTheme = Theme.of(context).textTheme;
     final offset = renderBox.localToGlobal(Offset.zero);
@@ -224,9 +242,7 @@ class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
             onPressed: () => Navigator.pop(ctx),
             child: Text(
               AppLocalizations.of(context)!.cancel,
-              style: textTheme.bodyLarge?.copyWith(
-                fontWeight: FontWeight.w400,
-              ),
+              style: textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w400),
             ),
           ),
         ),
@@ -257,11 +273,7 @@ class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
             value: 'rename',
             child: Row(
               children: [
-                Icon(
-                  Icons.edit_outlined,
-                  color: nomad.textPrimary,
-                  size: 22,
-                ),
+                Icon(Icons.edit_outlined, color: nomad.textPrimary, size: 22),
                 const SizedBox(width: 12),
                 Text(
                   AppLocalizations.of(context)!.rename,
@@ -274,11 +286,7 @@ class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
             value: 'delete',
             child: Row(
               children: [
-                const Icon(
-                  Icons.delete_outline,
-                  color: Colors.red,
-                  size: 22,
-                ),
+                const Icon(Icons.delete_outline, color: Colors.red, size: 22),
                 const SizedBox(width: 12),
                 Text(
                   AppLocalizations.of(context)!.delete,
@@ -304,33 +312,97 @@ class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     final textTheme = Theme.of(context).textTheme;
     final conversations = ref.watch(conversationsProvider);
+    final activeConversationId = ref.watch(activeConversationIdProvider);
+    final desktop = context.isDesktop;
+    final loc = AppLocalizations.of(context)!;
+    final location = widget.currentLocation ?? GoRouter.of(context).location;
+    final destinations =
+        <({String path, String label, String? svg, IconData? icon})>[
+      if (desktop)
+        (
+          path: '/home',
+          label: loc.chat,
+          svg: null,
+          icon: Icons.chat_bubble_outline_rounded,
+        ),
+      (path: '/code', label: 'Code', svg: null, icon: Icons.code_rounded),
+      (
+        path: '/creations',
+        label: loc.creations,
+        svg: 'assets/images/canvas.svg',
+        icon: null,
+      ),
+      (
+        path: '/you',
+        label: 'You',
+        svg: 'assets/images/relieved-02.svg',
+        icon: null,
+      ),
+      (
+        path: '/skills',
+        label: 'Skills',
+        svg: 'assets/images/book-open-text.svg',
+        icon: null,
+      ),
+      (
+        path: '/settings/models',
+        label: loc.models,
+        svg: 'assets/images/chip.svg',
+        icon: null,
+      ),
+    ];
+    final actions = destinations.map((destination) {
+      final selected = location == destination.path ||
+          location.startsWith('${destination.path}/');
+      return _SidebarAction(
+        key: ValueKey('navigation-${destination.path}'),
+        svgAsset: destination.svg,
+        icon: destination.icon,
+        label: destination.label,
+        selected: selected,
+        desktop: desktop,
+        onTap: () {
+          if (selected) return;
+          if (destination.path == '/home') {
+            context.go('/home');
+          } else {
+            context.push(destination.path);
+          }
+        },
+      );
+    }).toList();
 
     return Scaffold(
       backgroundColor: nomad.background,
       body: SafeArea(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 48, 20, 15),
+        child: CustomScrollView(
+          scrollCacheExtent: const ScrollCacheExtent.pixels(150),
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 20, 12, 16),
                 child: Row(
                   children: [
-                    Text(
+                    Expanded(
+                        child: Text(
                       'Nomad',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: textTheme.displaySmall?.copyWith(
                         fontSize: 20,
                         decoration: TextDecoration.none,
                       ),
-                    ),
-                    const Spacer(),
+                    )),
                     _SidebarHeaderButton(
                       svgAsset: 'assets/images/settings.svg',
                       tooltip: AppLocalizations.of(context)!.settings,
+                      selected: location.startsWith('/settings') &&
+                          !location.startsWith('/settings/models'),
                       onTap: () {
-                        context.push('/settings');
+                        if (location != '/settings') context.push('/settings');
                       },
                     ),
-                    const SizedBox(width: 10),
+                    const SizedBox(width: 4),
                     _SidebarHeaderButton(
                       svgAsset: 'assets/images/compose.svg',
                       tooltip: AppLocalizations.of(context)!.newChat,
@@ -339,178 +411,190 @@ class _ChatHistoryScreenState extends ConsumerState<ChatHistoryScreen> {
                   ],
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(25, 0, 25, 20),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: Wrap(
-                    alignment: WrapAlignment.spaceBetween,
-                    runSpacing: 15,
-                  children: [
-                  BouncyFadeSlide(
-                    delay: const Duration(milliseconds: 40),
-                    slideOffset: 14,
-                    child: _SidebarAction(
-                      svgAsset: 'assets/images/canvas.svg',
-                      label: AppLocalizations.of(context)!.creations,
-                      onTap: () {
-                        context.push('/creations');
-                      },
-                    ),
-                  ),
-                  BouncyFadeSlide(
-                    delay: const Duration(milliseconds: 100),
-                    slideOffset: 14,
-                    child: _SidebarAction(
-                      svgAsset: 'assets/images/relieved-02.svg',
-                      label: 'You',
-                      onTap: () {
-                        context.push('/you');
-                      },
-                    ),
-                  ),
-                  BouncyFadeSlide(
-                    delay: const Duration(milliseconds: 160),
-                    slideOffset: 14,
-                    child: _SidebarAction(
-                      svgAsset: 'assets/images/book-open-text.svg',
-                      label: 'Skills',
-                      onTap: () {
-                        context.push('/skills');
-                      },
-                    ),
-                  ),
-                  BouncyFadeSlide(
-                    delay: const Duration(milliseconds: 220),
-                    slideOffset: 14,
-                    child: _SidebarAction(
-                      svgAsset: 'assets/images/chip.svg',
-                      label: AppLocalizations.of(context)!.models,
-                      onTap: () {
-                        context.push('/settings/models');
-                      },
-                    ),
-                  ),
-                ],
-                  ),
-                ),
             ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(25, 30, 25, 12),
-              child: Text(
-                AppLocalizations.of(context)!.chatHistory,
-                style: textTheme.displaySmall?.copyWith(
-                  fontSize: 18,
-                  decoration: TextDecoration.none,
-                ),
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: desktop
+                    ? Column(
+                        key: const ValueKey('desktop-navigation'),
+                        children: [
+                          for (final action in actions)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: action,
+                            ),
+                        ],
+                      )
+                    : LayoutBuilder(
+                        builder: (context, constraints) {
+                          final columns = constraints.maxWidth >= 300 ? 3 : 2;
+                          final scale =
+                              MediaQuery.textScalerOf(context).scale(13) / 13;
+                          return GridView.count(
+                            key: const ValueKey('mobile-navigation'),
+                            crossAxisCount: columns,
+                            mainAxisSpacing: 8,
+                            crossAxisSpacing: 8,
+                            childAspectRatio:
+                                (constraints.maxWidth - (columns - 1) * 8) /
+                                    columns /
+                                    (80 + 40 * scale),
+                            shrinkWrap: true,
+                            primary: false,
+                            physics: const NeverScrollableScrollPhysics(),
+                            children: actions,
+                          );
+                        },
+                      ),
               ),
             ),
-            Expanded(
-              child: conversations.isEmpty
-                  ? Center(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 24, 20, 12),
+                child: NomadSectionLabel(loc.chatHistory),
+              ),
+            ),
+            if (conversations.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Image.asset(
+                        'assets/images/sad_face.png',
+                        width: 40,
+                        height: 40,
+                        color: nomad.textSecondary.withValues(alpha: 0.5),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'No history; start chatting',
+                        style: textTheme.labelLarge?.copyWith(
+                          color: nomad.textSecondary,
+                          decoration: TextDecoration.none,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                sliver: SliverList(
+                  delegate: SliverChildBuilderDelegate((context, index) {
+                    final conv = conversations[index];
+                    final isSelected = activeConversationId == conv.id;
+                    final itemKey = _conversationKeys.putIfAbsent(
+                      conv.id,
+                      GlobalKey.new,
+                    );
+                    void showActions() {
+                      HapticFeedback.heavyImpact();
+                      final renderBox = itemKey.currentContext
+                          ?.findRenderObject() as RenderBox?;
+                      if (renderBox == null) return;
+                      _showContextMenu(context, renderBox, conv);
+                    }
+
+                    return Container(
+                      key: itemKey,
+                      margin: const EdgeInsets.only(bottom: 6),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? nomad.textPrimary.withValues(alpha: 0.06)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(NomadRadii.control),
+                      ),
+                      child: Row(
                         children: [
-                          Image.asset(
-                            'assets/images/sad_face.png',
-                            width: 40,
-                            height: 40,
-                            color: nomad.textSecondary.withValues(alpha: 0.5),
+                          Expanded(
+                            child: BouncyTap(
+                              onTap: () => _selectConversation(conv),
+                              onLongPress: showActions,
+                              tooltip: conv.title,
+                              selected: isSelected,
+                              scaleDown: 0.98,
+                              child: Container(
+                                constraints: const BoxConstraints(
+                                  minHeight: 48,
+                                ),
+                                alignment: Alignment.centerLeft,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                ),
+                                child: Text(
+                                  conv.title,
+                                  style: textTheme.bodyMedium,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ),
                           ),
-                          const SizedBox(height: 10),
-                          Text(
-                            'No history; start chatting',
-                            style: textTheme.labelLarge?.copyWith(
-                              color: nomad.textSecondary,
-                              decoration: TextDecoration.none,
+                          IconButton(
+                            tooltip: 'Chat actions',
+                            onPressed: showActions,
+                            icon: const Icon(
+                              Icons.more_horiz_rounded,
+                              size: 20,
+                            ),
+                            constraints: const BoxConstraints(
+                              minWidth: 48,
+                              minHeight: 48,
                             ),
                           ),
                         ],
                       ),
-                    )
-                  : ListView.builder(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      itemCount: conversations.length,
-                      scrollCacheExtent: const ScrollCacheExtent.pixels(150),
-                      addAutomaticKeepAlives: false,
-                      addRepaintBoundaries: true,
-                      itemBuilder: (context, index) {
-                        final conv = conversations[index];
-                        final isSelected = _currentConversationId == conv.id;
-                        final itemKey =
-                            _conversationKeys.putIfAbsent(conv.id, GlobalKey.new);
-                        return GestureDetector(
-                          onTap: () => _selectConversation(conv),
-                          onLongPress: () {
-                            HapticFeedback.heavyImpact();
-                            final renderBox = itemKey.currentContext
-                                ?.findRenderObject() as RenderBox?;
-                            if (renderBox == null) return;
-                            _showContextMenu(context, renderBox, conv);
-                          },
-                          child: Container(
-                            key: itemKey,
-                            margin: const EdgeInsets.only(bottom: 6),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 14, vertical: 12),
-                            decoration: BoxDecoration(
-                              color: isSelected
-                                  ? nomad.textPrimary.withValues(alpha: 0.06)
-                                  : Colors.transparent,
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                            child: Text(
-                              conv.title,
-                              style: textTheme.bodySmall?.copyWith(
-                                fontSize: 14,
-                                color: nomad.textPrimary,
-                                decoration: TextDecoration.none,
-                                fontWeight: FontWeight.w400,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
+                    );
+                  }, childCount: conversations.length),
+                ),
+              ),
           ],
         ),
       ),
     );
-}
+  }
 }
 
 class _SidebarHeaderButton extends StatelessWidget {
   final String svgAsset;
   final String tooltip;
   final VoidCallback onTap;
+  final bool selected;
 
   const _SidebarHeaderButton({
     required this.svgAsset,
     required this.tooltip,
     required this.onTap,
+    this.selected = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
-    return Tooltip(
-      message: tooltip,
-      child: GestureDetector(
-        onTap: onTap,
-        child: SizedBox(
-          width: 40,
-          height: 40,
-          child: Center(
-            child: SvgPicture.asset(
-              svgAsset,
-              width: 30,
-              height: 30,
-              colorFilter:
-                  ColorFilter.mode(nomad.textPrimary, BlendMode.srcIn),
-            ),
+    return BouncyTap(
+      tooltip: tooltip,
+      onTap: onTap,
+      selected: selected,
+      scaleDown: 0.95,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: selected
+              ? nomad.accent.withValues(alpha: 0.18)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(NomadRadii.control),
+        ),
+        child: Center(
+          child: SvgPicture.asset(
+            svgAsset,
+            width: 22,
+            height: 22,
+            colorFilter: ColorFilter.mode(nomad.textPrimary, BlendMode.srcIn),
           ),
         ),
       ),
@@ -519,60 +603,91 @@ class _SidebarHeaderButton extends StatelessWidget {
 }
 
 class _SidebarAction extends StatelessWidget {
-  final String svgAsset;
+  final String? svgAsset;
+  final IconData? icon;
   final String label;
   final VoidCallback onTap;
+  final bool selected;
+  final bool desktop;
 
   const _SidebarAction({
-    required this.svgAsset,
+    super.key,
+    this.svgAsset,
+    this.icon,
     required this.label,
     required this.onTap,
-  });
+    required this.selected,
+    required this.desktop,
+  }) : assert(svgAsset != null || icon != null);
 
   @override
   Widget build(BuildContext context) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     final textTheme = Theme.of(context).textTheme;
-    return GestureDetector(
+    final glyph = icon != null
+        ? Icon(icon, size: 24, color: nomad.textPrimary)
+        : SvgPicture.asset(
+            svgAsset!,
+            width: 24,
+            height: 24,
+            colorFilter: ColorFilter.mode(nomad.textPrimary, BlendMode.srcIn),
+          );
+    final title = Text(
+      label,
+      maxLines: desktop ? 1 : 2,
+      textAlign: desktop ? TextAlign.start : TextAlign.center,
+      overflow: TextOverflow.ellipsis,
+      style: (desktop ? textTheme.bodyMedium : textTheme.bodySmall)?.copyWith(
+        color: nomad.textPrimary,
+        fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+      ),
+    );
+    return BouncyTap(
       onTap: onTap,
-      child: SizedBox(
-        width: 70,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 60,
-              height: 60,
-              decoration: BoxDecoration(
-                color: nomad.surface,
-                shape: BoxShape.circle,
-              ),
-              child: Center(
-                child: Opacity(
-                  opacity: 0.7,
-                  child: SvgPicture.asset(
-                    svgAsset,
-                    width: 26,
-                    height: 26,
-                    colorFilter:
-                        ColorFilter.mode(nomad.textPrimary, BlendMode.srcIn),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: textTheme.labelLarge?.copyWith(
-                color: nomad.textPrimary,
-                fontSize: 12,
-                decoration: TextDecoration.none,
-              ),
-            ),
-          ],
+      tooltip: label,
+      selected: selected,
+      scaleDown: 0.97,
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 48),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: selected
+              ? nomad.accent.withValues(alpha: 0.18)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(NomadRadii.control),
+          border: Border.all(
+            color: selected ? nomad.borderStrong : Colors.transparent,
+          ),
         ),
+        child: desktop
+            ? Row(
+                children: [
+                  glyph,
+                  const SizedBox(width: 12),
+                  Expanded(child: title),
+                  if (selected) ...[
+                    const SizedBox(width: 8),
+                    Icon(Icons.circle, size: 6, color: nomad.textPrimary),
+                  ],
+                ],
+              )
+            : Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: nomad.surface,
+                      shape: BoxShape.circle,
+                    ),
+                    alignment: Alignment.center,
+                    child: glyph,
+                  ),
+                  const SizedBox(height: 8),
+                  title,
+                ],
+              ),
       ),
     );
   }

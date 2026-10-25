@@ -57,6 +57,9 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# WebView2's C++/WinRT code needs standard coroutines with current MSVC.
+target_compile_features(webview_all_windows_plugin PRIVATE cxx_std_20)
+
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can

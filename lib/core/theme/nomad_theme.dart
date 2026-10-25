@@ -2,15 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-/// Standard corner radii used across Nomad. Pop-up surfaces (dialogs, sheets,
-/// menus, snackbars) use soft, normal rounding — not the pill/stadium shape
-/// reserved for buttons, inputs and chips.
+/// Standard corner radii for content surfaces and controls. Pill shapes are
+/// reserved for compact controls, not cards or text inputs.
 class NomadRadii {
   static const double dialog = 28.0;
   static const double sheet = 30.0;
   static const double menu = 20.0;
   static const double snackBar = 18.0;
   static const double card = 24.0;
+  static const double control = 16.0;
 }
 
 class NomadColors {
@@ -94,54 +94,58 @@ class NomadTheme {
       displayLarge: baseTextTheme.displayLarge?.copyWith(
         color: textPrimary,
         fontSize: 34,
-        fontWeight: FontWeight.w400,
+        fontWeight: FontWeight.w600,
         letterSpacing: 0,
         height: 1.15,
       ),
       displayMedium: baseTextTheme.displayMedium?.copyWith(
         color: textPrimary,
         fontSize: 28,
-        fontWeight: FontWeight.w400,
+        fontWeight: FontWeight.w600,
         letterSpacing: 0,
         height: 1.2,
       ),
       displaySmall: baseTextTheme.displaySmall?.copyWith(
         color: textPrimary,
         fontSize: 24,
-        fontWeight: FontWeight.w400,
+        fontWeight: FontWeight.w600,
         letterSpacing: 0,
         height: 1.25,
       ),
       headlineLarge: baseTextTheme.headlineLarge?.copyWith(
         color: textPrimary,
         fontSize: 22,
-        fontWeight: FontWeight.w400,
+        fontWeight: FontWeight.w600,
         letterSpacing: 0,
         height: 1.3,
       ),
       headlineMedium: baseTextTheme.headlineMedium?.copyWith(
         color: textPrimary,
         fontSize: 18,
-        fontWeight: FontWeight.w400,
+        fontWeight: FontWeight.w600,
         letterSpacing: 0,
         height: 1.35,
       ),
       headlineSmall: baseTextTheme.headlineSmall?.copyWith(
         color: textPrimary,
         fontSize: 16,
-        fontWeight: FontWeight.w400,
+        fontWeight: FontWeight.w600,
         height: 1.4,
       ),
       titleLarge: baseTextTheme.titleLarge?.copyWith(
         color: textPrimary,
         fontSize: 17,
-        fontWeight: FontWeight.w400,
+        fontWeight: FontWeight.w600,
         letterSpacing: 0,
       ),
       titleMedium: baseTextTheme.titleMedium?.copyWith(
         color: textPrimary,
         fontSize: 15,
-        fontWeight: FontWeight.w400,
+        fontWeight: FontWeight.w600,
+      ),
+      titleSmall: baseTextTheme.titleSmall?.copyWith(
+        color: textPrimary,
+        fontWeight: FontWeight.w600,
       ),
       bodyLarge: baseTextTheme.bodyLarge?.copyWith(
         color: textPrimary,
@@ -220,15 +224,15 @@ class NomadTheme {
         systemOverlayStyle:
             (isLight ? SystemUiOverlayStyle.dark : SystemUiOverlayStyle.light)
                 .copyWith(
-                  systemNavigationBarColor: Colors.transparent,
-                  systemNavigationBarDividerColor: Colors.transparent,
-                ),
+          systemNavigationBarColor: Colors.transparent,
+          systemNavigationBarDividerColor: Colors.transparent,
+        ),
       ),
       cardTheme: CardThemeData(
         elevation: 0,
         color: surface,
-        shape: ContinuousRectangleBorder(
-          borderRadius: BorderRadius.circular(999),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(NomadRadii.card),
           side: BorderSide(color: border.withValues(alpha: 0.5)),
         ),
       ),
@@ -236,15 +240,15 @@ class NomadTheme {
         filled: true,
         fillColor: surface,
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(999),
+          borderRadius: BorderRadius.circular(NomadRadii.control),
           borderSide: BorderSide.none,
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(999),
+          borderRadius: BorderRadius.circular(NomadRadii.control),
           borderSide: BorderSide(color: border.withValues(alpha: 0.5)),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(999),
+          borderRadius: BorderRadius.circular(NomadRadii.control),
           borderSide: BorderSide(color: textPrimary, width: 1.5),
         ),
         contentPadding: const EdgeInsets.symmetric(
@@ -289,12 +293,12 @@ class NomadTheme {
           backgroundColor: textPrimary,
           foregroundColor: background,
           minimumSize: const Size(double.infinity, 54),
-          shape: ContinuousRectangleBorder(
-            borderRadius: BorderRadius.circular(999),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(NomadRadii.control),
           ),
           textStyle: GoogleFonts.instrumentSans(
             fontSize: 16,
-            fontWeight: FontWeight.w400,
+            fontWeight: FontWeight.w600,
           ),
           elevation: 0,
         ),
@@ -304,7 +308,7 @@ class NomadTheme {
           foregroundColor: textPrimary,
           textStyle: GoogleFonts.instrumentSans(
             fontSize: 16,
-            fontWeight: FontWeight.w400,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ),
@@ -321,7 +325,8 @@ class NomadTheme {
         backgroundColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(NomadRadii.sheet)),
+          borderRadius:
+              BorderRadius.vertical(top: Radius.circular(NomadRadii.sheet)),
         ),
       ),
       popupMenuTheme: PopupMenuThemeData(

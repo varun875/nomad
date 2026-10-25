@@ -22,16 +22,21 @@ class PerformanceService {
   int _deviceRamGb = 0;
 
   /// Whether this device should avoid continuous/expensive animations.
-  /// Returns `false` until [init] has completed.
-  bool get isLowEnd => _isLowEnd;
+  /// On mobile platforms, conservatively defaults to `true` until [init] completes.
+  bool get isLowEnd =>
+      _initialized ? _isLowEnd : (Platform.isAndroid || Platform.isIOS);
 
   /// Mobile hardware where continuous full-screen effects should be avoided,
   /// while short interaction and navigation animations remain enabled.
-  bool get isConstrained => _isConstrained;
+  /// On mobile platforms, conservatively defaults to `true` until [init] completes.
+  bool get isConstrained =>
+      _initialized ? _isConstrained : (Platform.isAndroid || Platform.isIOS);
 
   int get deviceRamGb => _deviceRamGb;
 
   bool get initialized => _initialized;
+
+  int get streamingIntervalMs => isLowEnd ? 100 : (isConstrained ? 80 : 50);
 
   /// Resolve the device tier. Safe to call multiple times; only the first call
   /// does any work. Should be awaited once during app bootstrap.

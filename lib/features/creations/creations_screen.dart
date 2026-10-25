@@ -6,14 +6,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:path_provider/path_provider.dart' show getApplicationDocumentsDirectory;
-import 'package:webview_flutter/webview_flutter.dart';
+import 'package:path_provider/path_provider.dart'
+    show getApplicationDocumentsDirectory;
 import 'package:home_widget/home_widget.dart';
 import '../../core/providers/download_provider.dart';
 import '../../core/theme/nomad_theme.dart';
 import '../../core/widgets/nomad_widgets.dart';
 import '../../core/widgets/nomad_animations.dart';
 import '../../core/constants/responsive.dart';
+import '../../core/services/secure_storage_service.dart';
 import '../../l10n/app_localizations.dart';
 
 // ============================================================================
@@ -49,35 +50,35 @@ class Creation {
   bool get isWidget => type == 'widget';
 
   Map<String, dynamic> toJson() => {
-    'id': id,
-    'title': title,
-    'html': html,
-    'createdAt': createdAt.toIso8601String(),
-    'updatedAt': updatedAt.toIso8601String(),
-    'messages': messages,
-    'isPinned': isPinned,
-    'pinnedIconPath': pinnedIconPath,
-    'pinnedName': pinnedName,
-    'type': type,
-    'screenshotPath': screenshotPath,
-  };
+        'id': id,
+        'title': title,
+        'html': html,
+        'createdAt': createdAt.toIso8601String(),
+        'updatedAt': updatedAt.toIso8601String(),
+        'messages': messages,
+        'isPinned': isPinned,
+        'pinnedIconPath': pinnedIconPath,
+        'pinnedName': pinnedName,
+        'type': type,
+        'screenshotPath': screenshotPath,
+      };
 
   factory Creation.fromJson(Map<String, dynamic> json) => Creation(
-    id: json['id'] as String,
-    title: json['title'] as String,
-    html: json['html'] as String,
-    createdAt: DateTime.parse(json['createdAt'] as String),
-    updatedAt: DateTime.parse(json['updatedAt'] as String),
-    messages: (json['messages'] as List<dynamic>?)
-            ?.map((m) => Map<String, dynamic>.from(m as Map))
-            .toList() ??
-        [],
-    isPinned: json['isPinned'] as bool? ?? false,
-    pinnedIconPath: json['pinnedIconPath'] as String?,
-    pinnedName: json['pinnedName'] as String?,
-    type: json['type'] as String? ?? 'playground',
-    screenshotPath: json['screenshotPath'] as String?,
-  );
+        id: json['id'] as String,
+        title: json['title'] as String,
+        html: json['html'] as String,
+        createdAt: DateTime.parse(json['createdAt'] as String),
+        updatedAt: DateTime.parse(json['updatedAt'] as String),
+        messages: (json['messages'] as List<dynamic>?)
+                ?.map((m) => Map<String, dynamic>.from(m as Map))
+                .toList() ??
+            [],
+        isPinned: json['isPinned'] as bool? ?? false,
+        pinnedIconPath: json['pinnedIconPath'] as String?,
+        pinnedName: json['pinnedName'] as String?,
+        type: json['type'] as String? ?? 'playground',
+        screenshotPath: json['screenshotPath'] as String?,
+      );
 
   Creation copyWith({
     String? id,
@@ -110,15 +111,30 @@ class Creation {
 // ============================================================================
 // PROVIDER
 // ============================================================================
-final creationsProvider = StateNotifierProvider<CreationsNotifier, List<Creation>>((ref) => CreationsNotifier());
+final creationsProvider =
+    StateNotifierProvider<CreationsNotifier, List<Creation>>(
+        (ref) => CreationsNotifier());
+final creationsLoadedProvider = FutureProvider<void>(
+  (ref) => ref.watch(creationsProvider.notifier).loaded,
+);
 
 class CreationsNotifier extends StateNotifier<List<Creation>> {
   CreationsNotifier() : super([]) {
-    _loadFromHive();
+    loaded = _loadFromHive();
+    // List-only consumers may not observe loading errors. Keep the original
+    // future available to the viewer without reporting an unhandled error.
+    loaded.ignore();
   }
 
-  void _loadFromHive() {
-    final box = Hive.box('creations');
+  late final Future<void> loaded;
+
+  Future<Box> _getBox() async {
+    if (Hive.isBoxOpen('creations')) return Hive.box('creations');
+    return SecureStorageService.openEncryptedBox('creations');
+  }
+
+  Future<void> _loadFromHive() async {
+    final box = await _getBox();
     final items = <Creation>[];
     for (final key in box.keys.toList()) {
       try {
@@ -132,19 +148,21 @@ class CreationsNotifier extends StateNotifier<List<Creation>> {
       }
     }
     items.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    state = items;
+    if (mounted) state = items;
   }
 
   Future<void> saveCreation(Creation creation) async {
+    await loaded;
     state = [
       creation,
       ...state.where((c) => c.id != creation.id),
     ];
-    final box = Hive.box('creations');
+    final box = await _getBox();
     await box.put(creation.id, creation.toJson());
   }
 
   Future<void> deleteCreation(String id) async {
+    await loaded;
     // Remove associated screenshot file so storage doesn't leak.
     Creation? toDelete;
     try {
@@ -163,11 +181,13 @@ class CreationsNotifier extends StateNotifier<List<Creation>> {
       if (await fallback.exists()) await fallback.delete();
     } catch (_) {}
     state = state.where((c) => c.id != id).toList();
-    final box = Hive.box('creations');
+    final box = await _getBox();
     await box.delete(id);
   }
 
-  Future<void> togglePin(String id, {bool? isPinned, String? pinnedName, String? pinnedIconPath}) async {
+  Future<void> togglePin(String id,
+      {bool? isPinned, String? pinnedName, String? pinnedIconPath}) async {
+    await loaded;
     state = state.map((c) {
       if (c.id == id) {
         final updated = c.copyWith(
@@ -175,8 +195,7 @@ class CreationsNotifier extends StateNotifier<List<Creation>> {
           pinnedName: pinnedName,
           pinnedIconPath: pinnedIconPath,
         );
-        final box = Hive.box('creations');
-        box.put(updated.id, updated.toJson());
+        _getBox().then((box) => box.put(updated.id, updated.toJson()));
         return updated;
       }
       return c;
@@ -225,7 +244,8 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
   }
 
   void _checkBottomFade() {
-    if (_scrollController.hasClients && _scrollController.position.maxScrollExtent > 0) {
+    if (_scrollController.hasClients &&
+        _scrollController.position.maxScrollExtent > 0) {
       setState(() => _bottomFadeOpacity = 1.0);
     }
   }
@@ -236,6 +256,7 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
     _scrollController.dispose();
     super.dispose();
   }
+
   void _showCreationOptions(GlobalKey cardKey, Creation creation) {
     final renderBox = cardKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null || !mounted) return;
@@ -267,11 +288,13 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(CupertinoIcons.pin, color: CupertinoColors.activeBlue, size: 20),
+                  const Icon(CupertinoIcons.pin,
+                      color: CupertinoColors.activeBlue, size: 20),
                   const SizedBox(width: 10),
                   Text(
                     'Pin to Home Screen',
-                    style: textTheme.bodyLarge?.copyWith(color: CupertinoColors.activeBlue),
+                    style: textTheme.bodyLarge
+                        ?.copyWith(color: CupertinoColors.activeBlue),
                   ),
                 ],
               ),
@@ -284,11 +307,13 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(CupertinoIcons.doc_text, color: CupertinoColors.activeBlue, size: 20),
+                  const Icon(CupertinoIcons.doc_text,
+                      color: CupertinoColors.activeBlue, size: 20),
                   const SizedBox(width: 10),
                   Text(
                     'Export as HTML',
-                    style: textTheme.bodyLarge?.copyWith(color: CupertinoColors.activeBlue),
+                    style: textTheme.bodyLarge
+                        ?.copyWith(color: CupertinoColors.activeBlue),
                   ),
                 ],
               ),
@@ -302,11 +327,13 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(CupertinoIcons.delete, color: CupertinoColors.destructiveRed, size: 20),
+                  const Icon(CupertinoIcons.delete,
+                      color: CupertinoColors.destructiveRed, size: 20),
                   const SizedBox(width: 10),
                   Text(
                     AppLocalizations.of(context)!.delete,
-                    style: textTheme.bodyLarge?.copyWith(color: CupertinoColors.destructiveRed),
+                    style: textTheme.bodyLarge
+                        ?.copyWith(color: CupertinoColors.destructiveRed),
                   ),
                 ],
               ),
@@ -332,17 +359,20 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
         context: context,
         position: position,
         color: nomad.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(NomadRadii.menu)),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(NomadRadii.menu)),
         items: [
           PopupMenuItem<String>(
             value: 'pin',
             child: Row(
               children: [
-                const Icon(Icons.pin_drop_outlined, color: CupertinoColors.activeBlue, size: 22),
+                const Icon(Icons.pin_drop_outlined,
+                    color: CupertinoColors.activeBlue, size: 22),
                 const SizedBox(width: 12),
                 Text(
                   'Pin to Home Screen',
-                  style: textTheme.bodyLarge?.copyWith(color: CupertinoColors.activeBlue),
+                  style: textTheme.bodyLarge
+                      ?.copyWith(color: CupertinoColors.activeBlue),
                 ),
               ],
             ),
@@ -351,11 +381,13 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
             value: 'export',
             child: Row(
               children: [
-                const Icon(Icons.file_download_outlined, color: CupertinoColors.activeBlue, size: 22),
+                const Icon(Icons.file_download_outlined,
+                    color: CupertinoColors.activeBlue, size: 22),
                 const SizedBox(width: 12),
                 Text(
                   'Export as HTML',
-                  style: textTheme.bodyLarge?.copyWith(color: CupertinoColors.activeBlue),
+                  style: textTheme.bodyLarge
+                      ?.copyWith(color: CupertinoColors.activeBlue),
                 ),
               ],
             ),
@@ -394,7 +426,8 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
       await htmlFile.writeAsString(creation.html);
 
       final h = _hashString(creation.id);
-      final c = _CreationStickerCard.palette[h % _CreationStickerCard.palette.length];
+      final c =
+          _CreationStickerCard.palette[h % _CreationStickerCard.palette.length];
       final colorHex =
           '#${(c.toARGB32() & 0x00FFFFFF).toRadixString(16).padLeft(6, '0')}';
 
@@ -402,16 +435,19 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
       await HomeWidget.saveWidgetData<String>('creationTitle', creation.title);
       await HomeWidget.saveWidgetData<String>('creationColor', colorHex);
       await HomeWidget.saveWidgetData<String>('htmlFilePath', htmlFile.path);
-      await HomeWidget.saveWidgetData<String>('updatedAt', creation.updatedAt.toIso8601String());
+      await HomeWidget.saveWidgetData<String>(
+          'updatedAt', creation.updatedAt.toIso8601String());
       await HomeWidget.saveWidgetData<String>('creationType', creation.type);
 
       if (creation.screenshotPath != null) {
-        await HomeWidget.saveWidgetData<String>('screenshotPath', creation.screenshotPath);
+        await HomeWidget.saveWidgetData<String>(
+            'screenshotPath', creation.screenshotPath);
       }
 
       // Also save iOS-compatible keys (home_widget's iOS WidgetKit extension reads these)
       await HomeWidget.saveWidgetData<String>('title', creation.title);
-      await HomeWidget.saveWidgetData<String>('content', 'Nomad Creation: ${creation.title}');
+      await HomeWidget.saveWidgetData<String>(
+          'content', 'Nomad Creation: ${creation.title}');
 
       await HomeWidget.updateWidget(
         name: 'NomadWidgetProvider',
@@ -497,19 +533,23 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
               onPressed: () => Navigator.pop(ctx),
               child: Text(
                 AppLocalizations.of(context)!.cancel,
-                style: textTheme.bodyMedium?.copyWith(color: nomad.textSecondary),
+                style:
+                    textTheme.bodyMedium?.copyWith(color: nomad.textSecondary),
               ),
             ),
             CupertinoDialogAction(
               isDestructiveAction: true,
               onPressed: () {
-                ref.read(creationsProvider.notifier).deleteCreation(creation.id);
+                ref
+                    .read(creationsProvider.notifier)
+                    .deleteCreation(creation.id);
                 Navigator.pop(ctx);
                 HapticFeedback.lightImpact();
               },
               child: Text(
                 AppLocalizations.of(context)!.delete,
-                style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w400),
+                style:
+                    textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w400),
               ),
             ),
           ],
@@ -520,7 +560,8 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
         context: context,
         builder: (ctx) => AlertDialog(
           backgroundColor: nomad.surface,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(NomadRadii.dialog)),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(NomadRadii.dialog)),
           title: Text(
             '${AppLocalizations.of(context)!.delete} ${AppLocalizations.of(context)!.creations}?',
             style: textTheme.headlineMedium,
@@ -531,21 +572,28 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: () { HapticFeedback.lightImpact(); Navigator.pop(ctx); },
+              onPressed: () {
+                HapticFeedback.lightImpact();
+                Navigator.pop(ctx);
+              },
               child: Text(
                 AppLocalizations.of(context)!.cancel,
-                style: textTheme.bodyMedium?.copyWith(color: nomad.textSecondary),
+                style:
+                    textTheme.bodyMedium?.copyWith(color: nomad.textSecondary),
               ),
             ),
             TextButton(
               onPressed: () {
                 HapticFeedback.lightImpact();
-                ref.read(creationsProvider.notifier).deleteCreation(creation.id);
+                ref
+                    .read(creationsProvider.notifier)
+                    .deleteCreation(creation.id);
                 Navigator.pop(ctx);
               },
               child: Text(
                 AppLocalizations.of(context)!.delete,
-                style: textTheme.bodyMedium?.copyWith(color: Colors.red, fontWeight: FontWeight.w400),
+                style: textTheme.bodyMedium
+                    ?.copyWith(color: Colors.red, fontWeight: FontWeight.w400),
               ),
             ),
           ],
@@ -554,48 +602,9 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
     }
   }
 
-  static String _wrapWithCsp(String html) {
-    const csp =
-        '<meta http-equiv="Content-Security-Policy" '
-        'content="default-src \'none\'; script-src \'unsafe-inline\'; '
-        'style-src \'unsafe-inline\'; img-src data: blob:; '
-        'font-src data:; media-src data: blob:; connect-src \'none\'; '
-        'frame-src \'none\'; object-src \'none\'; base-uri \'none\'; '
-        'form-action \'none\'">';
-    // Always enforce our strict policy rather than trusting page-supplied
-    // CSP. Browsers enforce the intersection of every CSP policy, so content
-    // that injects its own permissive policy (e.g. connect-src *) still
-    // cannot relax the connect-src 'none' / frame-src 'none' rules below.
-    return '$csp\n$html';
-  }
-
   void _showPreview(BuildContext context, Creation creation) {
     if (creation.html.isEmpty) return;
-    final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
-
-    final webViewController = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(nomad.background)
-      ..setNavigationDelegate(NavigationDelegate(
-        onNavigationRequest: (req) {
-          if (req.url == 'about:blank' ||
-              req.url.startsWith('data:') ||
-              req.url.startsWith('blob:')) {
-            return NavigationDecision.navigate;
-          }
-          return NavigationDecision.prevent;
-        },
-      ))
-      ..loadHtmlString(_wrapWithCsp(creation.html));
-
-    Navigator.of(context, rootNavigator: true).push(
-      MaterialPageRoute(
-        builder: (ctx) => _CreationPreviewScreen(
-          webViewController: webViewController,
-          onClose: () => Navigator.pop(ctx),
-        ),
-      ),
-    );
+    context.push('/creations/app/${creation.id}');
   }
 
   @override
@@ -608,7 +617,8 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
 
     final downloaded = ref.watch(downloadProvider);
     final creativeModels = downloaded.where((m) => m.downloaded);
-    final creativeModel = creativeModels.isNotEmpty ? creativeModels.first : null;
+    final creativeModel =
+        creativeModels.isNotEmpty ? creativeModels.first : null;
 
     final filtered = _selectedTab == 'all'
         ? creations
@@ -617,7 +627,8 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
-        statusBarIconBrightness: brightness == Brightness.dark ? Brightness.light : Brightness.dark,
+        statusBarIconBrightness:
+            brightness == Brightness.dark ? Brightness.light : Brightness.dark,
       ),
       child: Scaffold(
         backgroundColor: nomad.background,
@@ -632,7 +643,8 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
               Positioned(
                 left: 20,
                 top: topPadding + 100,
-                child: NomadTitle(title: AppLocalizations.of(context)!.creations),
+                child:
+                    NomadTitle(title: AppLocalizations.of(context)!.creations),
               ),
               Positioned.fill(
                 left: 20,
@@ -653,7 +665,7 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
                           Positioned.fill(
                             child: filtered.isEmpty
                                 ? _buildEmptyState(context, nomad)
-                                : _buildGrid(context, creations, nomad),
+                                : _buildGrid(context, filtered, nomad),
                           ),
                           if (_topFadeOpacity > 0)
                             Positioned(
@@ -714,9 +726,11 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
     );
   }
 
-  EdgeInsets mediaPadding(BuildContext context) => MediaQuery.of(context).padding;
+  EdgeInsets mediaPadding(BuildContext context) =>
+      MediaQuery.of(context).padding;
 
-  Widget _buildCreativePrompt(BuildContext context, NomadColorsExtension nomad) {
+  Widget _buildCreativePrompt(
+      BuildContext context, NomadColorsExtension nomad) {
     final textTheme = Theme.of(context).textTheme;
 
     return BouncyFadeSlide(
@@ -777,7 +791,7 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
                 ),
                 child: Center(
                   child: Text(
-                      'Download a Model',
+                    'Download a Model',
                     style: textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w400,
                       color: nomad.background,
@@ -805,18 +819,23 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
     final textTheme = Theme.of(context).textTheme;
     final tabs = [
       ('all', 'All'),
-      ('playgrounds', 'Playgrounds'),
-      ('widgets', 'Widgets'),
+      ('playground', 'Playgrounds'),
+      ('widget', 'Widgets'),
     ];
-    return Row(
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
       children: tabs.map((tab) {
         final isSelected = _selectedTab == tab.$1;
-        return GestureDetector(
+        return BouncyTap(
           onTap: () => setState(() => _selectedTab = tab.$1),
+          tooltip: tab.$2,
+          selected: isSelected,
+          scaleDown: 0.97,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 200),
-            margin: const EdgeInsets.only(right: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            constraints: const BoxConstraints(minHeight: 48),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             decoration: BoxDecoration(
               color: isSelected ? nomad.textPrimary : Colors.transparent,
               borderRadius: BorderRadius.circular(20),
@@ -838,13 +857,10 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
     );
   }
 
-  Widget _buildGrid(BuildContext context, List<Creation> creations, NomadColorsExtension nomad) {
+  Widget _buildGrid(BuildContext context, List<Creation> creations,
+      NomadColorsExtension nomad) {
     final width = MediaQuery.of(context).size.width;
     final columns = width > 900 ? 5 : (width > 600 ? 4 : (width > 400 ? 3 : 2));
-
-    final filtered = _selectedTab == 'all'
-        ? creations
-        : creations.where((c) => c.type == _selectedTab).toList();
 
     final bottomSafe = MediaQuery.of(context).padding.bottom;
     return GridView.builder(
@@ -856,13 +872,13 @@ class _CreationsScreenState extends ConsumerState<CreationsScreen> {
         mainAxisSpacing: 18,
         childAspectRatio: 0.78,
       ),
-      itemCount: filtered.length,
+      itemCount: creations.length,
       scrollCacheExtent: const ScrollCacheExtent.pixels(500),
       addAutomaticKeepAlives: false,
       addRepaintBoundaries: true,
       physics: const BouncingScrollPhysics(),
       itemBuilder: (context, index) {
-        final creation = filtered[index];
+        final creation = creations[index];
         final cardKey = GlobalKey();
         return StaggeredEntrance(
           index: index,
@@ -963,7 +979,8 @@ class _CreationStickerCard extends StatelessWidget {
       case 0:
         return const CircleBorder();
       case 1:
-        return ContinuousRectangleBorder(borderRadius: BorderRadius.circular(999));
+        return ContinuousRectangleBorder(
+            borderRadius: BorderRadius.circular(999));
       case 2:
         // Squircle-ish — rounded corners with a slight asymmetric bias.
         return const ContinuousRectangleBorder(
@@ -1219,7 +1236,8 @@ class _CreationWidgetCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(16),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withValues(alpha: isDark ? 0.45 : 0.12),
+                        color: Colors.black
+                            .withValues(alpha: isDark ? 0.45 : 0.12),
                         blurRadius: 16,
                         offset: const Offset(0, 8),
                       ),
@@ -1241,7 +1259,8 @@ class _CreationWidgetCard extends StatelessWidget {
                           width: double.infinity,
                           height: double.infinity,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _buildFallbackIcon(fallbackColor),
+                          errorBuilder: (_, __, ___) =>
+                              _buildFallbackIcon(fallbackColor),
                         )
                       : _buildFallbackIcon(fallbackColor),
                 ),
@@ -1250,7 +1269,8 @@ class _CreationWidgetCard extends StatelessWidget {
                   top: 10,
                   left: 12,
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                     decoration: BoxDecoration(
                       color: Colors.black.withValues(alpha: 0.7),
                       borderRadius: BorderRadius.circular(8),
@@ -1258,7 +1278,8 @@ class _CreationWidgetCard extends StatelessWidget {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.widgets_rounded, size: 10, color: Colors.white),
+                        const Icon(Icons.widgets_rounded,
+                            size: 10, color: Colors.white),
                         const SizedBox(width: 4),
                         Text(
                           'WIDGET',
@@ -1350,65 +1371,5 @@ class _CreationWidgetCard extends StatelessWidget {
       return AppLocalizations.of(context)!.daysAgo(diff.inDays);
     }
     return '${date.month}/${date.day}/${date.year}';
-  }
-}
-
-// ============================================================================
-// CREATION PREVIEW SCREEN
-// ============================================================================
-class _CreationPreviewScreen extends StatelessWidget {
-  final WebViewController webViewController;
-  final VoidCallback onClose;
-  const _CreationPreviewScreen({required this.webViewController, required this.onClose});
-
-  @override
-  Widget build(BuildContext context) {
-    final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
-    final textTheme = Theme.of(context).textTheme;
-
-    return Scaffold(
-      backgroundColor: nomad.background,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              child: Row(
-                children: [
-                  BouncyTap(
-                    onTap: onClose,
-                    scaleDown: 0.85,
-                    child: Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: nomad.border),
-                      ),
-                      child: Icon(Icons.close, size: 18, color: nomad.textPrimary),
-                    ),
-                  ),
-                  Expanded(
-                    child: Center(
-                      child: Text(
-                        AppLocalizations.of(context)!.preview,
-                        style: textTheme.titleLarge,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 36),
-                ],
-              ),
-            ),
-            Divider(color: nomad.border, height: 1, thickness: 0.5),
-            Expanded(
-              child: RepaintBoundary(
-                child: WebViewWidget(controller: webViewController),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }

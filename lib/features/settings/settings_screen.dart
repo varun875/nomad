@@ -3,7 +3,6 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive_flutter/hive_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:go_router/go_router.dart';
 
@@ -13,8 +12,7 @@ import '../../core/widgets/nomad_widgets.dart';
 import '../../core/widgets/nomad_animations.dart';
 import '../../core/services/inference_service.dart';
 import '../../core/services/search_service.dart';
-import '../../features/chat/chat_screen.dart';
-import '../../features/creations/creations_screen.dart';
+import '../../core/widgets/rich_message_renderer.dart';
 import '../../l10n/app_localizations.dart';
 
 /// Settings — monochrome, borderless redesign.
@@ -60,8 +58,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Future<void> _openAssistantSettings() async {
     HapticFeedback.selectionClick();
     final l10n = AppLocalizations.of(context);
-    final message =
-        l10n?.couldntOpenAssistantSettings ?? 'Couldn\'t open assistant settings';
+    final message = l10n?.couldntOpenAssistantSettings ??
+        'Couldn\'t open assistant settings';
     try {
       const channel = MethodChannel('com.varun.nomad/storage');
       final dynamic ok = await channel.invokeMethod('openAssistantSettings');
@@ -119,8 +117,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               Navigator.pop(dialogContext, '');
             },
             child: Text('Clear',
-                style: textTheme.bodyMedium
-                    ?.copyWith(color: nomad.textSecondary)),
+                style:
+                    textTheme.bodyMedium?.copyWith(color: nomad.textSecondary)),
           ),
           TextButton(
             onPressed: () {
@@ -211,95 +209,95 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       child: Scaffold(
         backgroundColor: nomad.background,
         body: Stack(
-            children: [
-              Positioned(
-                left: 20,
-                top: topPadding + 48,
-                child: NomadBackButton(onTap: () => context.pop()),
+          children: [
+            Positioned(
+              left: 20,
+              top: topPadding + 48,
+              child: NomadBackButton(onTap: () => context.pop()),
+            ),
+            Positioned(
+              left: 20,
+              top: topPadding + 100,
+              child: NomadTitle(title: loc.settings),
+            ),
+            Positioned.fill(
+              top: topPadding + 150,
+              left: 20,
+              right: 20,
+              child: ListView(
+                padding: EdgeInsets.only(bottom: bottomSafe + 24),
+                scrollCacheExtent: const ScrollCacheExtent.pixels(500),
+                physics: const BouncingScrollPhysics(),
+                children: [
+                  const _SectionLabel(label: 'General'),
+                  const SizedBox(height: 10),
+                  _StickerTile(
+                    title: 'Token Speed',
+                    subtitle: 'Show tok/s on chat and editor',
+                    icon: Icons.speed_rounded,
+                    trailing: CupertinoSwitch(
+                      value: _showTokenSpeed,
+                      activeTrackColor: nomad.textPrimary,
+                      onChanged: _toggleTokenSpeed,
+                    ),
+                    onTap: () => _toggleTokenSpeed(!_showTokenSpeed),
+                  ),
+                  const SizedBox(height: 16),
+                  _StickerTile(
+                    title: 'Decode Threads',
+                    subtitle: _threadOverride == null
+                        ? 'Auto'
+                        : '${_threadOverride!} threads · reloads model',
+                    icon: Icons.tune_rounded,
+                    showChevron: true,
+                    onTap: _chooseDecodeThreads,
+                  ),
+                  const SizedBox(height: 16),
+                  _StickerTile(
+                    title: 'Digital Assistant',
+                    subtitle: 'Use Nomad as your default assistant (Android)',
+                    icon: Icons.assistant_rounded,
+                    showChevron: true,
+                    onTap: _openAssistantSettings,
+                  ),
+                  const SizedBox(height: 16),
+                  _StickerTile(
+                    title: 'Web Search',
+                    subtitle: _searchKeySet
+                        ? 'TinyFish · Monid key set'
+                        : 'DuckDuckGo · tap to add a Monid key',
+                    icon: Icons.travel_explore_rounded,
+                    showChevron: true,
+                    onTap: _editSearchKey,
+                  ),
+                  const SizedBox(height: 28),
+                  const _SectionLabel(label: 'Data'),
+                  const SizedBox(height: 10),
+                  _StickerTile(
+                    title: loc.clearCache,
+                    subtitle: loc.removeTemporaryFiles,
+                    icon: Icons.delete_sweep_rounded,
+                    destructive: true,
+                    onTap: () => _confirmClearCache(context, textTheme),
+                  ),
+                  const SizedBox(height: 28),
+                  const _SectionLabel(label: 'About'),
+                  const SizedBox(height: 10),
+                  _StickerTile(
+                    title: loc.aboutNomad,
+                    subtitle: '${loc.version} ${AppVersion.version}',
+                    icon: Icons.info_rounded,
+                    onTap: () => context.push('/settings/about'),
+                    showChevron: true,
+                  ),
+                ],
               ),
-              Positioned(
-                left: 20,
-                top: topPadding + 100,
-                child: NomadTitle(title: loc.settings),
-              ),
-              Positioned.fill(
-                top: topPadding + 150,
-                left: 20,
-                right: 20,
-                child: ListView(
-                  padding: EdgeInsets.only(bottom: bottomSafe + 24),
-                  scrollCacheExtent: const ScrollCacheExtent.pixels(500),
-                  physics: const BouncingScrollPhysics(),
-                  children: [
-                    const _SectionLabel(label: 'General'),
-                    const SizedBox(height: 10),
-                    _StickerTile(
-                      title: 'Token Speed',
-                      subtitle: 'Show tok/s on chat and editor',
-                      icon: Icons.speed_rounded,
-                      trailing: CupertinoSwitch(
-                        value: _showTokenSpeed,
-                        activeTrackColor: nomad.textPrimary,
-                        onChanged: _toggleTokenSpeed,
-                      ),
-                      onTap: () => _toggleTokenSpeed(!_showTokenSpeed),
-                    ),
-                    const SizedBox(height: 16),
-                    _StickerTile(
-                      title: 'Decode Threads',
-                      subtitle: _threadOverride == null
-                          ? 'Auto'
-                          : '${_threadOverride!} threads · reloads model',
-                      icon: Icons.tune_rounded,
-                      showChevron: true,
-                      onTap: _chooseDecodeThreads,
-                    ),
-                    const SizedBox(height: 16),
-                    _StickerTile(
-                      title: 'Digital Assistant',
-                      subtitle: 'Use Nomad as your default assistant (Android)',
-                      icon: Icons.assistant_rounded,
-                      showChevron: true,
-                      onTap: _openAssistantSettings,
-                    ),
-                    const SizedBox(height: 16),
-                    _StickerTile(
-                      title: 'Web Search',
-                      subtitle: _searchKeySet
-                          ? 'TinyFish · Monid key set'
-                          : 'DuckDuckGo · tap to add a Monid key',
-                      icon: Icons.travel_explore_rounded,
-                      showChevron: true,
-                      onTap: _editSearchKey,
-                    ),
-                    const SizedBox(height: 28),
-                    const _SectionLabel(label: 'Data'),
-                    const SizedBox(height: 10),
-                    _StickerTile(
-                      title: loc.clearCache,
-                      subtitle: loc.removeTemporaryFiles,
-                      icon: Icons.delete_sweep_rounded,
-                      destructive: true,
-                      onTap: () => _confirmClearCache(context, textTheme),
-                    ),
-                    const SizedBox(height: 28),
-                    const _SectionLabel(label: 'About'),
-                    const SizedBox(height: 10),
-                    _StickerTile(
-                      title: loc.aboutNomad,
-                      subtitle: '${loc.version} ${AppVersion.version}',
-                      icon: Icons.info_rounded,
-                      onTap: () => context.push('/settings/about'),
-                      showChevron: true,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
+        ),
       ),
     );
-}
+  }
 
   void _confirmClearCache(BuildContext context, TextTheme textTheme) {
     final screenContext = context;
@@ -324,32 +322,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     textTheme.bodyMedium?.copyWith(color: nomad.textSecondary)),
           ),
           TextButton(
-            onPressed: () async {
+            onPressed: () {
               HapticFeedback.lightImpact();
               Navigator.pop(dialogContext);
-              final prefs = await SharedPreferences.getInstance();
-              for (final key in [
-                'onboarded',
-                'selectedModelId',
-                'language'
-              ]) {
-                await prefs.remove(key);
-              }
-              await Hive.box('chats').clear();
-              await Hive.box('creations').clear();
-              await Hive.box('settings').clear();
-              // Reset in-memory providers so ghost history doesn't persist until restart.
-              ref.invalidate(conversationsProvider);
-              ref.invalidate(creationsProvider);
-              ref.invalidate(chatMessagesProvider);
+              // Picker attachments can live in the OS temporary directory.
+              // Clear only disposable render caches, never persisted data/files.
+              PaintingBinding.instance.imageCache
+                ..clear()
+                ..clearLiveImages();
+              RichMessageRenderer.clearCache();
               if (screenContext.mounted) {
                 ScaffoldMessenger.of(screenContext).showSnackBar(
                   SnackBar(
-                    content: Text(loc.cacheCleared,
-                        style: textTheme.bodySmall),
+                    content: Text(loc.cacheCleared, style: textTheme.bodySmall),
                     duration: const Duration(seconds: 2),
                     behavior: SnackBarBehavior.floating,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(NomadRadii.snackBar)),
+                    shape: RoundedRectangleBorder(
+                        borderRadius:
+                            BorderRadius.circular(NomadRadii.snackBar)),
                     margin: const EdgeInsets.all(20),
                   ),
                 );

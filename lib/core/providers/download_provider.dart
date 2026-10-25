@@ -322,7 +322,7 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
       return;
     }
 
-    final expectedSha = _pinnedSha256(id);
+    final expectedSha = ModelService.pinnedSha256For(id);
     if (expectedSha != null && expectedSha.isNotEmpty) {
       try {
         final actualSha = await _sha256OfFile(file);
@@ -339,10 +339,26 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
         }
         print('SHA256 verified for $id');
       } catch (e) {
-        print('WARN: SHA256 check failed for $id: $e (keeping file)');
+        print('ERROR: SHA256 check failed for $id: $e');
+        try {
+          await file.delete();
+        } catch (_) {}
+        _markAsFailed(
+          id,
+          'Download corrupted (checksum check failed). Please try again.',
+        );
+        return;
       }
     } else {
-      print('WARN: No SHA256 available for $id — skipping hash check (size check passed)');
+      print('ERROR: No pinned SHA256 for $id — refusing to mark as completed');
+      try {
+        await file.delete();
+      } catch (_) {}
+      _markAsFailed(
+        id,
+        'Missing checksum for model. Please update the app.',
+      );
+      return;
     }
 
     print(

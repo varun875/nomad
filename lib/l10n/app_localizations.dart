@@ -148,7 +148,7 @@ abstract class AppLocalizations {
   /// Subtitle for clear cache
   ///
   /// In en, this message translates to:
-  /// **'Remove temporary files'**
+  /// **'Clear cached previews and formatted messages'**
   String get removeTemporaryFiles;
 
   /// About Nomad settings item
@@ -214,7 +214,7 @@ abstract class AppLocalizations {
   /// Clear cache confirmation message
   ///
   /// In en, this message translates to:
-  /// **'This removes temporary files only. Your downloaded models and chats will not be affected.'**
+  /// **'This clears cached previews and formatted messages. Your models, chats, creations, memories, attachments, and settings are kept.'**
   String get clearCacheMessage;
 
   /// Delete model confirmation title

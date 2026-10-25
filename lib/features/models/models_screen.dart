@@ -54,7 +54,7 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
   }
 
   Future<void> _loadModels() async {
-    final models = await ModelService.getRecommendedModels();
+    final models = await ModelService.getAvailableModels();
     if (mounted) {
       setState(() {
         _availableModels = models;
@@ -78,8 +78,9 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
   @override
   Widget build(BuildContext context) {
     final models = ref.watch(downloadProvider);
-    final downloading =
-        models.where((m) => m.downloadStatus == DownloadStatus.downloading).toList();
+    final downloading = models
+        .where((m) => m.downloadStatus == DownloadStatus.downloading)
+        .toList();
     final installed = models.where((m) => m.downloaded).toList();
     final usedFraction =
         _totalStorageGB > 0 ? _usedStorageGB / _totalStorageGB : 0.0;
@@ -91,8 +92,8 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
     final installedIds = installed.map((m) => m.id).toSet();
     final downloadingIds = downloading.map((m) => m.id).toSet();
     final trulyAvailable = _availableModels
-        .where(
-            (m) => !installedIds.contains(m.id) && !downloadingIds.contains(m.id))
+        .where((m) =>
+            !installedIds.contains(m.id) && !downloadingIds.contains(m.id))
         .toList();
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -104,109 +105,107 @@ class _ModelsScreenState extends ConsumerState<ModelsScreen> {
       child: Scaffold(
         backgroundColor: nomad.background,
         body: Stack(
-            children: [
-              Positioned(
-                left: 20,
-                top: 48,
-                child: NomadBackButton(onTap: () => context.pop()),
-              ),
-              Positioned(
-                left: 20,
-                top: 100,
-                child: NomadTitle(title: loc.models),
-              ),
-              Positioned.fill(
-                left: 20,
-                right: 20,
-                top: 156,
-                child: RefreshIndicator(
-                  onRefresh: () async {
-                    await _loadModels();
-                    await _loadStorageInfo();
-                  },
-                  color: nomad.textPrimary,
-                  backgroundColor: nomad.surface,
-                  child: ListView(
-                    padding: EdgeInsets.only(bottom: bottomSafe + 24),
-                    scrollCacheExtent: const ScrollCacheExtent.pixels(500),
-                    physics: const BouncingScrollPhysics(),
-                    children: [
-                      _StorageCard(
-                        used: _usedStorageGB,
-                        total: _totalStorageGB,
-                        fraction: usedFraction,
-                      ),
-                      if (downloading.isNotEmpty) ...[
-                        const SizedBox(height: 26),
-                        _SectionLabel(label: loc.downloading),
-                        const SizedBox(height: 12),
-                        for (int i = 0; i < downloading.length; i++) ...[
-                          if (i > 0) const SizedBox(height: 12),
-                          _ModelCard(
-                            model: downloading[i],
-                            onPrimaryTap: () =>
-                                _confirmCancel(downloading[i]),
-                            isDownloadingHere:
-                                _downloadingIds.contains(downloading[i].id),
-                          ),
-                        ],
-                      ],
-                      if (installed.isNotEmpty) ...[
-                        const SizedBox(height: 26),
-                        _SectionLabel(label: loc.installed),
-                        const SizedBox(height: 12),
-                        for (int i = 0; i < installed.length; i++) ...[
-                          if (i > 0) const SizedBox(height: 12),
-                          _ModelCard(
-                            model: installed[i],
-                            onPrimaryTap: () => _confirmDelete(installed[i]),
-                            isDownloadingHere: false,
-                          ),
-                        ],
-                      ],
-                      if (trulyAvailable.isNotEmpty) ...[
-                        const SizedBox(height: 26),
-                        _SectionLabel(label: loc.available),
-                        const SizedBox(height: 12),
-                        for (int i = 0; i < trulyAvailable.length; i++) ...[
-                          if (i > 0) const SizedBox(height: 12),
-                          _ModelCard(
-                            model: trulyAvailable[i],
-                            onPrimaryTap: () =>
-                                _startDownload(trulyAvailable[i]),
-                            isDownloadingHere: false,
-                          ),
-                        ],
-                      ],
-                      if (_isLoading)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 32),
-                          child: Center(
-                            child: CircularProgressIndicator(
-                                color: nomad.textPrimary, strokeWidth: 2),
-                          ),
+          children: [
+            Positioned(
+              left: 20,
+              top: 48,
+              child: NomadBackButton(onTap: () => context.pop()),
+            ),
+            Positioned(
+              left: 20,
+              top: 100,
+              child: NomadTitle(title: loc.models),
+            ),
+            Positioned.fill(
+              left: 20,
+              right: 20,
+              top: 156,
+              child: RefreshIndicator(
+                onRefresh: () async {
+                  await _loadModels();
+                  await _loadStorageInfo();
+                },
+                color: nomad.textPrimary,
+                backgroundColor: nomad.surface,
+                child: ListView(
+                  padding: EdgeInsets.only(bottom: bottomSafe + 24),
+                  scrollCacheExtent: const ScrollCacheExtent.pixels(500),
+                  physics: const BouncingScrollPhysics(),
+                  children: [
+                    _StorageCard(
+                      used: _usedStorageGB,
+                      total: _totalStorageGB,
+                      fraction: usedFraction,
+                    ),
+                    if (downloading.isNotEmpty) ...[
+                      const SizedBox(height: 26),
+                      _SectionLabel(label: loc.downloading),
+                      const SizedBox(height: 12),
+                      for (int i = 0; i < downloading.length; i++) ...[
+                        if (i > 0) const SizedBox(height: 12),
+                        _ModelCard(
+                          model: downloading[i],
+                          onPrimaryTap: () => _confirmCancel(downloading[i]),
+                          isDownloadingHere:
+                              _downloadingIds.contains(downloading[i].id),
                         ),
-                      if (!_isLoading &&
-                          downloading.isEmpty &&
-                          installed.isEmpty &&
-                          trulyAvailable.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 40),
-                          child: NomadEmptyState(
-                            icon: Icons.download_outlined,
-                            title: loc.noModelsYet,
-                            subtitle: loc.downloadModelToStart,
-                          ),
-                        ),
+                      ],
                     ],
-                  ),
+                    if (installed.isNotEmpty) ...[
+                      const SizedBox(height: 26),
+                      _SectionLabel(label: loc.installed),
+                      const SizedBox(height: 12),
+                      for (int i = 0; i < installed.length; i++) ...[
+                        if (i > 0) const SizedBox(height: 12),
+                        _ModelCard(
+                          model: installed[i],
+                          onPrimaryTap: () => _confirmDelete(installed[i]),
+                          isDownloadingHere: false,
+                        ),
+                      ],
+                    ],
+                    if (trulyAvailable.isNotEmpty) ...[
+                      const SizedBox(height: 26),
+                      _SectionLabel(label: loc.available),
+                      const SizedBox(height: 12),
+                      for (int i = 0; i < trulyAvailable.length; i++) ...[
+                        if (i > 0) const SizedBox(height: 12),
+                        _ModelCard(
+                          model: trulyAvailable[i],
+                          onPrimaryTap: () => _startDownload(trulyAvailable[i]),
+                          isDownloadingHere: false,
+                        ),
+                      ],
+                    ],
+                    if (_isLoading)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 32),
+                        child: Center(
+                          child: CircularProgressIndicator(
+                              color: nomad.textPrimary, strokeWidth: 2),
+                        ),
+                      ),
+                    if (!_isLoading &&
+                        downloading.isEmpty &&
+                        installed.isEmpty &&
+                        trulyAvailable.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 40),
+                        child: NomadEmptyState(
+                          icon: Icons.download_outlined,
+                          title: loc.noModelsYet,
+                          subtitle: loc.downloadModelToStart,
+                        ),
+                      ),
+                  ],
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
+        ),
       ),
     );
-}
+  }
 
   void _startDownload(HFModel model) {
     final hasError = model.downloadStatus == DownloadStatus.error;
@@ -345,8 +344,7 @@ class _StorageCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(loc.storage,
-                          style: textTheme.bodyLarge),
+                      Text(loc.storage, style: textTheme.bodyLarge),
                       const SizedBox(height: 2),
                       Text(
                         '${used.toStringAsFixed(1)} GB used · ${total.toStringAsFixed(0)} GB total',
@@ -538,8 +536,7 @@ class _ModelCard extends StatelessWidget {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.error_outline,
-                    size: 14, color: nomad.textSecondary),
+                Icon(Icons.error_outline, size: 14, color: nomad.textSecondary),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(

@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import '../../l10n/app_localizations.dart';
 import '../services/performance_service.dart';
 import '../theme/nomad_theme.dart';
 import 'nomad_animations.dart';
@@ -130,6 +131,27 @@ class _NomadBackdropState extends State<NomadBackdrop>
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bg = Theme.of(context).extension<NomadColorsExtension>()!.background;
+
+    if (PerformanceService.instance.isLowEnd) {
+      final staticLoadT = widget.state == BackdropState.loading
+          ? 1.0
+          : widget.state == BackdropState.streaming
+              ? 0.45
+              : 0.0;
+      return IgnorePointer(
+        child: RepaintBoundary(
+          child: CustomPaint(
+            painter: _AuroraPainter(
+              t: 0.0,
+              loadT: staticLoadT,
+              isDark: isDark,
+              bg: bg,
+            ),
+            size: Size.infinite,
+          ),
+        ),
+      );
+    }
 
     return IgnorePointer(
       child: RepaintBoundary(
@@ -341,20 +363,22 @@ class _NomadDotPatternPainter extends CustomPainter {
 
 class NomadBackButton extends StatelessWidget {
   final VoidCallback onTap;
-  final String label;
+  final String? label;
 
-  const NomadBackButton({super.key, required this.onTap, this.label = 'Back'});
+  const NomadBackButton({super.key, required this.onTap, this.label});
 
   @override
   Widget build(BuildContext context) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     final textTheme = Theme.of(context).textTheme;
+    final label = this.label ?? AppLocalizations.of(context)?.back ?? 'Back';
 
     return BouncyTap(
       onTap: onTap,
       scaleDown: 0.92,
+      tooltip: label,
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10),
+        padding: const EdgeInsets.symmetric(vertical: 12),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -397,7 +421,10 @@ class NomadTitle extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(title, style: textTheme.displaySmall),
+        Semantics(
+          header: true,
+          child: Text(title, style: textTheme.displaySmall),
+        ),
         if (subtitle != null) ...[
           const SizedBox(height: 6),
           Text(subtitle!, style: textTheme.bodySmall),
@@ -444,9 +471,8 @@ class NomadEmptyState extends StatelessWidget {
           const SizedBox(height: 20),
           Text(
             title,
-            style: textTheme.bodyLarge?.copyWith(
+            style: textTheme.titleLarge?.copyWith(
               color: nomad.textSecondary.withValues(alpha: 0.8),
-              fontWeight: FontWeight.w400,
             ),
           ),
           if (subtitle != null) ...[
@@ -542,39 +568,33 @@ class NomadSendButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
-
-    if (isStreaming) {
-      return BouncyTap(
-        onTap: onStop,
-        scaleDown: 0.85,
-        child: Container(
-          width: 36,
-          height: 36,
-          decoration: BoxDecoration(
-            color: nomad.textPrimary,
-            shape: BoxShape.circle,
-          ),
-          child: Icon(Icons.stop_rounded, color: nomad.background, size: 20),
-        ),
-      );
-    }
+    final onPressed = isStreaming ? onStop : (isEnabled ? onTap : null);
+    final label = isStreaming ? 'Stop generating' : 'Send message';
 
     return BouncyTap(
-      onTap: isEnabled ? onTap : null,
+      onTap: onPressed,
       scaleDown: 0.85,
-      child: Container(
-        width: 36,
-        height: 36,
-        decoration: BoxDecoration(
-          color: isEnabled ? nomad.textPrimary : nomad.textTertiary,
-          shape: BoxShape.circle,
-        ),
+      tooltip: label,
+      borderRadius: BorderRadius.circular(999),
+      child: SizedBox.square(
+        dimension: 48,
         child: Center(
-          child: Image.asset(
-            'assets/images/arrow.png',
-            width: 18,
-            height: 18,
-            color: nomad.background,
+          child: Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: onPressed != null ? nomad.textPrimary : nomad.textTertiary,
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: isStreaming
+                ? Icon(Icons.stop_rounded, color: nomad.background, size: 20)
+                : Image.asset(
+                    'assets/images/arrow.png',
+                    width: 18,
+                    height: 18,
+                    color: nomad.background,
+                  ),
           ),
         ),
       ),
