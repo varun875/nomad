@@ -35,17 +35,26 @@ class _Engine extends Fake implements LlamaEngine {
   Stream<LlamaCompletionChunk> Function() output = () => Stream.value(_chunk());
 
   @override
-  Future<void> loadModel(String path,
-      {ModelParams modelParams = const ModelParams()}) async {
+  Future<void> setModel(
+    LlamaModel model, {
+    ModelParams params = const ModelParams(),
+    ModelLoadOptions download = ModelLoadOptions.defaults,
+    ModelDownloadProgressCallback? onProgress,
+  }) async {
     loads++;
-    params = modelParams;
+    this.params = params;
     if (!loading.isCompleted) loading.complete();
     await loadGate?.future;
     if (loadError != null) throw loadError!;
   }
 
   @override
-  Future<void> loadMultimodalProjector(String path) async {
+  Future<void> loadMultimodalProjectorSource(
+    ModelSource source, {
+    ModelLoadOptions? download,
+    ModelLoadOptions? options,
+    ModelDownloadProgressCallback? onProgress,
+  }) async {
     projectorLoads++;
     if (projectorError != null) throw projectorError!;
   }
@@ -307,7 +316,7 @@ void main() {
       await service.loadModel(path);
       final engine = engines.single;
       expect(engine.projectorLoads, 0);
-      expect(engine.params!.contextSize, 2048);
+      expect(engine.params!.contextSize, 1536);
       expect(engine.params!.cacheTypeK, KvCacheType.q8_0);
       expect(engine.params!.cacheTypeV, KvCacheType.q8_0);
       expect(engine.params!.gpuLayers, 0);

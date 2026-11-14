@@ -956,6 +956,147 @@ class _CheckPainter extends CustomPainter {
       old.t != t || old.color != color;
 }
 
+/// Siri-style voice orb: layered gradient blobs that drift on their own and
+/// breathe wider with the microphone level. The drift loop is skipped on
+/// constrained devices and when nothing is happening, so an idle orb never
+/// burns a repaint per frame.
+class NomadVoiceOrb extends StatefulWidget {
+  const NomadVoiceOrb({
+    super.key,
+    required this.level,
+    required this.colors,
+    this.size = 96,
+    this.animating = true,
+  });
+
+  /// Normalized microphone loudness, 0 (silence) to 1 (loud).
+  final double level;
+  final List<Color> colors;
+  final double size;
+  final bool animating;
+
+  @override
+  State<NomadVoiceOrb> createState() => _NomadVoiceOrbState();
+}
+
+class _NomadVoiceOrbState extends State<NomadVoiceOrb>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 6),
+  );
+  bool _still = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _sync();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant NomadVoiceOrb oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _sync();
+  }
+
+  void _sync() {
+    _still = !widget.animating || PerformanceService.instance.isConstrained;
+    if (_still && _c.isAnimating) {
+      _c.stop();
+    } else if (!_still && !_c.isAnimating) {
+      _c.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RepaintBoundary(
+      child: SizedBox.square(
+        dimension: widget.size,
+        child: AnimatedBuilder(
+          animation: _c,
+          builder: (context, _) => CustomPaint(
+            painter: _VoiceOrbPainter(
+              t: _still ? 0.18 : _c.value,
+              level: widget.level.clamp(0.0, 1.0),
+              colors: widget.colors,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VoiceOrbPainter extends CustomPainter {
+  _VoiceOrbPainter({
+    required this.t,
+    required this.level,
+    required this.colors,
+  });
+
+  final double t;
+  final double level;
+  final List<Color> colors;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = size.shortestSide / 2;
+    final phase = t * 2 * math.pi;
+    final breathe = 0.5 + 0.5 * math.sin(phase);
+
+    // Soft halo that swells while the user is talking or the reply plays.
+    canvas.drawCircle(
+      center,
+      radius * (0.72 + 0.10 * breathe + 0.10 * level),
+      Paint()
+        ..color = colors.first.withValues(alpha: 0.10 + 0.12 * level)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, radius * 0.3),
+    );
+
+    for (var i = 0; i < colors.length; i++) {
+      final angle = phase + i * (2 * math.pi / colors.length);
+      final drift = radius * (0.16 + 0.05 * level);
+      final offset = Offset(
+        math.cos(angle) * drift,
+        math.sin(angle * 1.17) * drift,
+      );
+      final blobRadius =
+          radius * (0.40 + 0.07 * math.sin(angle * 1.3 + i) + 0.12 * level);
+      canvas.drawCircle(
+        center + offset,
+        blobRadius,
+        Paint()
+          ..shader = RadialGradient(
+            colors: [
+              colors[i].withValues(alpha: 0.92),
+              colors[i].withValues(alpha: 0),
+            ],
+          ).createShader(
+            Rect.fromCircle(center: center + offset, radius: blobRadius),
+          ),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _VoiceOrbPainter old) =>
+      old.t != t || old.level != level || old.colors != colors;
+}
+
 class NomadMorphIcon extends StatelessWidget {
   final IconData icon;
   final double size;

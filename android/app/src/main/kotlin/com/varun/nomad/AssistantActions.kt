@@ -1,12 +1,17 @@
 package com.varun.nomad
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioManager
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.provider.AlarmClock
 import android.provider.MediaStore
 import android.provider.Settings
+import android.view.KeyEvent
 import java.util.Locale
 
 /** OS-owned actions: opening an intent never claims that a call was made,
@@ -57,6 +62,32 @@ class AssistantActions(private val activity: Activity) {
                         .appendQueryParameter("q", query).build()
                     open(Intent(Intent.ACTION_VIEW, uri), "Opening search results for $query.")
                 }
+                "openUrl" -> {
+                    val raw = (arguments["url"] as? String ?: "").trim()
+                    if (raw.isBlank()) return failure("Which web page would you like?")
+                    val url = if (raw.startsWith("http://") || raw.startsWith("https://")) raw else "https://$raw"
+                    open(Intent(Intent.ACTION_VIEW, Uri.parse(url)), "Opening $url.")
+                }
+                "call" -> {
+                    val number = phoneNumber(arguments["number"] as? String) ?: return failure("I need a phone number to call.")
+                    open(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$number")), "Opening the dialer for $number.")
+                }
+                "message" -> {
+                    val number = phoneNumber(arguments["number"] as? String) ?: return failure("I need a phone number to text.")
+                    val body = arguments["body"] as? String
+                    val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$number"))
+                    if (!body.isNullOrBlank()) intent.putExtra("sms_body", body)
+                    open(intent, "Opening Messages with a text to $number.")
+                }
+                "mediaPlay" -> mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY, "Sent play to your music app.")
+                "mediaPause" -> mediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE, "Sent pause to your music app.")
+                "mediaNext" -> mediaKey(KeyEvent.KEYCODE_MEDIA_NEXT, "Skipping to the next track.")
+                "mediaPrevious" -> mediaKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS, "Going back a track.")
+                "volumeUp" -> adjustVolume(AudioManager.ADJUST_RAISE, "Turning the volume up.")
+                "volumeDown" -> adjustVolume(AudioManager.ADJUST_LOWER, "Turning the volume down.")
+                "volumeMute" -> adjustVolume(AudioManager.ADJUST_MUTE, "Muting the volume.")
+                "volumeUnmute" -> adjustVolume(AudioManager.ADJUST_UNMUTE, "Unmuting the volume.")
+                "battery" -> batteryStatus()
                 else -> failure("That phone action is not available.")
             }
         } catch (_: Exception) {
@@ -116,6 +147,45 @@ class AssistantActions(private val activity: Activity) {
             ?: return failure("That app doesn't have a launch screen.")
         return open(intent, "Opening ${match.loadLabel(manager)}.")
     }
+
+    /** Keeps digits and a leading + so the dialer and messaging apps can parse it. */
+    private fun phoneNumber(value: String?): String? {
+        val trimmed = value?.trim().orEmpty()
+        if (!Regex("^\\+?[\\d\\s().-]+$").matches(trimmed)) return null
+        val digits = trimmed.filter { it.isDigit() }
+        if (digits.length < 3 || digits.length > 15) return null
+        return if (trimmed.startsWith("+")) "+$digits" else digits
+    }
+
+    private fun mediaKey(keyCode: Int, message: String): Map<String, Any> {
+        val audio = activity.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            ?: return failure("This device can't control playback.")
+        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+        audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+        return success(message)
+    }
+
+    private fun adjustVolume(direction: Int, message: String): Map<String, Any> {
+        val audio = activity.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            ?: return failure("This device can't change the volume.")
+        audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
+        return success(message)
+    }
+
+    private fun batteryStatus(): Map<String, Any> {
+        val manager = activity.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+            ?: return failure("I couldn't read the battery level.")
+        val level = manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        if (level !in 0..100) return failure("I couldn't read the battery level.")
+        val status = activity.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL
+        return success("Your battery is at $level%${if (charging) " and charging." else "."}")
+    }
+
+    private fun success(message: String): Map<String, Any> =
+        mapOf("success" to true, "message" to message)
 
     private fun normalized(value: String) = value.lowercase(Locale.ROOT)
         .replace(Regex("[^\\p{L}\\p{N} ]"), "").replace(Regex("\\s+"), " ").trim()

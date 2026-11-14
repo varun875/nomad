@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:background_downloader/background_downloader.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/hf_model.dart';
 import '../models/download_status.dart';
 import '../services/model_service.dart';
@@ -129,6 +130,34 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
       return;
     }
 
+    // Free-storage preflight: the model file, its vision projector, and a 1 GB
+    // buffer must fit before a download is started.
+    final mmprojUrl = ModelService.getMmprojUrl(model.id);
+    final neededBytes = (model.totalBytes ?? (model.sizeMB * 1024 * 1024)) +
+        (mmprojUrl != null ? (model.mmprojBytes ?? 0) : 0) +
+        (1024 * 1024 * 1024);
+    final storage = await ModelService.getStorageSpace();
+    final freeBytes = storage['free'] ?? 0;
+    if (freeBytes > 0 && freeBytes < neededBytes) {
+      final missingMB = ((neededBytes - freeBytes) / (1024 * 1024)).ceil();
+      print('Not enough storage for ${model.id}: '
+          'needs $neededBytes bytes, $freeBytes free');
+      final failed = model.copyWith(
+        downloadStatus: DownloadStatus.error,
+        progress: 0,
+        errorMessage:
+            'Not enough storage. Free up about $missingMB MB and try again.',
+      );
+      if (state.any((m) => m.id == model.id)) {
+        state =
+            state.map((m) => m.id == model.id ? failed : m).toList();
+      } else {
+        state = [...state, failed];
+      }
+      unawaited(Hive.box('models').put(model.id, failed.toJson()));
+      return;
+    }
+
     print('Starting download for ${model.id}: $url');
 
     // Ensure models directory exists
@@ -157,6 +186,7 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
       taskId: model.id,
       displayName: model.name,
       priority: 10, // High priority for faster downloading
+      requiresWiFi: await _downloadsRequireWifi(),
     );
 
     // Preserve existing progress if resuming, otherwise start at 0
@@ -201,21 +231,36 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
   }
 
   void _updateProgress(String id, double progress, double speed) {
+    // The mmproj task streams under its own id; fold its progress into the
+    // owning model's combined (model + projector) progress so the card shows
+    // one download with the projector's bytes included.
+    final isMmproj = id.endsWith('_mmproj');
+    final modelId =
+        isMmproj ? id.substring(0, id.length - '_mmproj'.length) : id;
     // Clamp progress between 0 and 1 to avoid negative or >100% values
     final clampedProgress = progress.clamp(0.0, 1.0);
-    final newPercent = (clampedProgress * 100).round();
     final box = Hive.box('models');
     state = state.map((m) {
-      if (m.id == id) {
-        final totalBytes = m.totalBytes ?? (m.sizeMB * 1024 * 1024);
-        final downloadedBytes = (totalBytes * clampedProgress).toInt();
+      if (m.id == modelId) {
+        final modelBytes = m.totalBytes ?? (m.sizeMB * 1024 * 1024);
+        final mmprojBytes =
+            ModelService.getMmprojUrl(m.id) != null ? (m.mmprojBytes ?? 0) : 0;
+        final totalBytes = modelBytes + mmprojBytes;
+        // Once the mmproj phase starts the model file is fully on disk, so
+        // combined progress never regresses between the two tasks.
+        final downloadedBytes = isMmproj
+            ? modelBytes + (mmprojBytes * clampedProgress).toInt()
+            : (modelBytes * clampedProgress).toInt();
+        final combinedProgress =
+            totalBytes == 0 ? 0.0 : downloadedBytes / totalBytes;
+        final newPercent = (combinedProgress * 100).round();
 
         DownloadNotificationService.onProgressUpdate(
-          id,
-          clampedProgress,
+          modelId,
+          combinedProgress,
           speed >= 0 ? speed : (m.downloadSpeed ?? 0),
           downloadedBytes,
-          totalBytes.toInt(),
+          totalBytes,
         );
 
         final updated = m.copyWith(
@@ -223,30 +268,18 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
           progress: newPercent,
           downloadSpeed: speed >= 0 ? speed : (m.downloadSpeed ?? 0),
           downloadedBytes: downloadedBytes,
-          totalBytes: totalBytes.toInt(),
+          totalBytes: modelBytes.toInt(),
         );
 
         // Persist every 5% so progress survives an app restart without
         // excessive flash I/O on mobile (was every 1% = ~100 writes).
         if (m.progress != newPercent && newPercent % 5 == 0) {
-          unawaited(box.put(id, updated.toJson()));
+          unawaited(box.put(modelId, updated.toJson()));
         }
         return updated;
       }
       return m;
     }).toList();
-  }
-
-  /// Returns the pinned SHA-256 for [modelId], or null if none is pinned.
-  ///
-  /// Checksums are intentionally never fetched from the network: the file and
-  /// its expected hash would otherwise come from the same host, so a tampered
-  /// mirror (or MITM) could satisfy its own verification. Only values pinned
-  /// in [ModelService] are trusted.
-  String? _pinnedSha256(String modelId) {
-    final pinned = ModelService.pinnedSha256For(modelId);
-    if (pinned == null || pinned.isEmpty) return null;
-    return pinned.toLowerCase();
   }
 
   Future<String> _sha256OfFile(File file) async {
@@ -255,14 +288,16 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
   }
 
   /// Verifies a downloaded mmproj file against its pinned SHA-256, deleting the
-  /// file on mismatch so a tampered projector is never loaded by the backend.
-  Future<void> _verifyMmproj(String modelId) async {
+  /// file on mismatch or when the hash cannot be read, so a corrupted
+  /// projector is never kept around for the backend to load. Returns whether
+  /// the file passed verification.
+  Future<bool> _verifyMmproj(String modelId) async {
     final expected = ModelService.pinnedMmprojSha256For(modelId);
-    if (expected == null || expected.isEmpty) return;
+    if (expected == null || expected.isEmpty) return true;
     final modelsDir = await ModelService.getModelDirectory();
     final file =
         File('${modelsDir.path}/${modelId.replaceAll('/', '_')}.mmproj');
-    if (!await file.exists()) return;
+    if (!await file.exists()) return true;
     try {
       final actual = await _sha256OfFile(file);
       if (actual.toLowerCase() != expected.toLowerCase()) {
@@ -270,19 +305,34 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
         try {
           await file.delete();
         } catch (_) {}
-        return;
+        return false;
       }
       print('mmproj SHA256 verified for $modelId');
+      return true;
     } catch (e) {
-      print('WARN: mmproj SHA256 check failed for $modelId: $e (keeping file)');
+      // A hash-read failure means the file may be truncated or corrupted:
+      // delete it instead of keeping a potentially bad projector.
+      print('ERROR: mmproj SHA256 check failed for $modelId: $e (deleting file)');
+      try {
+        await file.delete();
+      } catch (_) {}
+      return false;
     }
   }
 
   Future<void> _markAsCompleted(String id) async {
     // The multimodal projector shares this completion pipeline but has no
-    // state entry of its own, so verify it here against its pinned hash.
+    // state entry of its own, so verify it here against its pinned hash and
+    // surface any failure on the owning model.
     if (id.endsWith('_mmproj')) {
-      await _verifyMmproj(id.substring(0, id.length - '_mmproj'.length));
+      final modelId = id.substring(0, id.length - '_mmproj'.length);
+      final verified = await _verifyMmproj(modelId);
+      if (!verified) {
+        await _markAsFailed(
+            modelId, 'Vision projector download failed (checksum). Tap to retry.');
+        return;
+      }
+      await _completeModel(modelId);
       return;
     }
     final matches = state.where((m) => m.id == id);
@@ -364,6 +414,47 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
     print(
         'Download completed: $modelPath (${(fileSize / 1024 / 1024).toStringAsFixed(1)} MB)');
 
+    // Download multimodal projector (mmproj) for vision models. The model is
+    // only marked installed once the projector has arrived and verified, so a
+    // vision download failure surfaces in the UI instead of being silent.
+    final mmprojUrl = ModelService.getMmprojUrl(id);
+    if (mmprojUrl != null) {
+      final mmprojPath =
+          '${modelsDir.path}/${id.replaceAll('/', '_')}.mmproj';
+      if (!await File(mmprojPath).exists()) {
+        final pendingModel = model.copyWith(
+          downloaded: false,
+          downloadStatus: DownloadStatus.downloading,
+          localPath: modelPath,
+        );
+        state = state.map((m) => m.id == id ? pendingModel : m).toList();
+        await Hive.box('models').put(id, pendingModel.toJson());
+        await _enqueueMmproj(id, mmprojUrl);
+        return;
+      }
+      // Projector already on disk (e.g. restored after a restart): enforce its
+      // integrity before declaring the download complete.
+      if (!await _verifyMmproj(id)) {
+        await _markAsFailed(
+            id, 'Vision projector download failed (checksum). Tap to retry.');
+        return;
+      }
+    }
+
+    await _completeModel(id);
+  }
+
+  /// Marks a fully verified model (and its mmproj, when present) as installed.
+  Future<void> _completeModel(String id) async {
+    final matches = state.where((m) => m.id == id);
+    if (matches.isEmpty) return;
+    final model = matches.first;
+    var modelPath = model.localPath;
+    if (modelPath == null) {
+      final modelsDir = await ModelService.getModelDirectory();
+      modelPath = '${modelsDir.path}/${id.replaceAll('/', '_')}.gguf';
+    }
+
     DownloadNotificationService.onDownloadComplete(id);
 
     final completedModel = model.copyWith(
@@ -377,40 +468,59 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
 
     final box = Hive.box('models');
     await box.put(id, completedModel.toJson());
+  }
 
-    // Download multimodal projector (mmproj) for vision models
-    final mmprojUrl = ModelService.getMmprojUrl(id);
-    if (mmprojUrl != null) {
-      final sharedDesktopModels = Platform.isWindows || Platform.isLinux || Platform.isMacOS;
-      final mmprojTask = DownloadTask(
-        url: mmprojUrl,
-        filename: '${id.replaceAll('/', '_')}.mmproj',
-        directory: sharedDesktopModels ? 'Nomad/models' : 'models',
-        baseDirectory: BaseDirectory.applicationDocuments,
-        retries: 3,
-        allowPause: true,
-        taskId: '${id}_mmproj',
-      );
-      try {
-        await FileDownloader().enqueue(mmprojTask);
-      } catch (e) {
-        print('Mmproj download error for $id: $e');
+  /// Whether downloads should pause until Wi-Fi is available (Settings).
+  Future<bool> _downloadsRequireWifi() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool('downloadsRequireWifi') ?? false;
+  }
+
+  Future<void> _enqueueMmproj(String id, String url) async {
+    final sharedDesktopModels =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+    final mmprojTask = DownloadTask(
+      url: url,
+      filename: '${id.replaceAll('/', '_')}.mmproj',
+      directory: sharedDesktopModels ? 'Nomad/models' : 'models',
+      baseDirectory: BaseDirectory.applicationDocuments,
+      // The projector is a full download (up to ~200 MB): show its progress.
+      updates: Updates.statusAndProgress,
+      retries: 3,
+      allowPause: true,
+      taskId: '${id}_mmproj',
+      requiresWiFi: await _downloadsRequireWifi(),
+    );
+    try {
+      final enqueued = await FileDownloader().enqueue(mmprojTask);
+      if (!enqueued) {
+        await _markAsFailed(
+            id, 'Vision projector download failed to start. Tap to retry.');
       }
+    } catch (e) {
+      print('Mmproj download error for $id: $e');
+      await _markAsFailed(
+          id, 'Vision projector download failed. Tap to retry.');
     }
   }
 
   Future<void> _markAsFailed(String id, [String? error]) async {
-    print('Download failed for $id: ${error ?? 'unknown error'}');
-    DownloadNotificationService.onDownloadError(id);
+    // The mmproj task has no state entry of its own: strip the suffix so its
+    // failure surfaces on the owning model's card instead of disappearing.
+    final modelId = id.endsWith('_mmproj')
+        ? id.substring(0, id.length - '_mmproj'.length)
+        : id;
+    print('Download failed for $modelId: ${error ?? 'unknown error'}');
+    DownloadNotificationService.onDownloadError(modelId);
     final box = Hive.box('models');
     state = state.map((m) {
-      if (m.id == id) {
+      if (m.id == modelId) {
         final failed = m.copyWith(
           downloadStatus: DownloadStatus.error,
           progress: 0,
           errorMessage: error ?? 'Download failed. Tap to retry.',
         );
-        unawaited(box.put(id, failed.toJson()));
+        unawaited(box.put(modelId, failed.toJson()));
         return failed;
       }
       return m;
@@ -488,9 +598,10 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
   /// Cancel a downloading model
   Future<void> cancelDownload(String id) async {
     DownloadNotificationService.onDownloadCancelled(id);
-    // Cancel the download task
+    // Cancel the download tasks (model file and vision projector)
     await FileDownloader().cancelTaskWithId(id);
-    
+    await FileDownloader().cancelTaskWithId('${id}_mmproj');
+
     // Reset state
     final box = Hive.box('models');
     state = state.map((m) {
@@ -505,12 +616,17 @@ class DownloadNotifier extends StateNotifier<List<HFModel>> {
       }
       return m;
     }).toList();
-    
-    // Clean up any partial file
+
+    // Clean up any partial files
     final modelsDir = await ModelService.getModelDirectory();
     final partialFile = File('${modelsDir.path}/${id.replaceAll('/', '_')}.gguf');
     if (await partialFile.exists()) {
       await partialFile.delete();
+    }
+    final partialMmproj =
+        File('${modelsDir.path}/${id.replaceAll('/', '_')}.mmproj');
+    if (await partialMmproj.exists()) {
+      await partialMmproj.delete();
     }
   }
 }

@@ -22,6 +22,11 @@ class HFModel {
   final int? totalBytes;
   final String? errorMessage;
 
+  /// Download size of the model's multimodal projector (mmproj) file in bytes,
+  /// or null when the model has no projector. Used for free-storage checks and
+  /// combined download progress.
+  final int? mmprojBytes;
+
   HFModel({
     required this.id,
     required this.name,
@@ -43,6 +48,7 @@ class HFModel {
     this.downloadedBytes,
     this.totalBytes,
     this.errorMessage,
+    this.mmprojBytes,
   });
 
   Map<String, dynamic> toJson() => {
@@ -66,6 +72,7 @@ class HFModel {
     'downloadedBytes': downloadedBytes,
     'totalBytes': totalBytes,
     'errorMessage': errorMessage,
+    'mmprojBytes': mmprojBytes,
   };
 
   factory HFModel.fromJson(Map<String, dynamic> json) => HFModel(
@@ -89,6 +96,7 @@ class HFModel {
     downloadedBytes: json['downloadedBytes'],
     totalBytes: json['totalBytes'],
     errorMessage: json['errorMessage'],
+    mmprojBytes: json['mmprojBytes'],
   );
 
   HFModel copyWith({
@@ -112,6 +120,7 @@ class HFModel {
     int? downloadedBytes,
     int? totalBytes,
     String? errorMessage,
+    int? mmprojBytes,
     bool clearError = false,
   }) => HFModel(
     id: id ?? this.id,
@@ -134,5 +143,6 @@ class HFModel {
     downloadedBytes: downloadedBytes ?? this.downloadedBytes,
     totalBytes: totalBytes ?? this.totalBytes,
     errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
+    mmprojBytes: mmprojBytes ?? this.mmprojBytes,
   );
 }

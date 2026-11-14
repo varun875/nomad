@@ -1,6 +1,9 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:llamadart/llamadart.dart';
+import '../services/assistant_platform_service.dart';
+import '../services/phone_actions.dart';
 import '../services/search_service.dart';
 import '../services/memory_service.dart';
 
@@ -34,13 +37,25 @@ class Skill {
 }
 
 class SkillNotifier extends StateNotifier<List<Skill>> {
-  SkillNotifier() : super([]) {
+  SkillNotifier(this._phoneActions) : super([]) {
     _load();
   }
 
+  final PhoneActions _phoneActions;
+
   /// Built-in skills that map directly to model tools. These always exist;
   /// only their enabled state is persisted.
-  static final List<Skill> _builtIns = [
+  late final List<Skill> _builtIns = [
+    Skill(
+      id: 'phone_actions',
+      name: 'Phone Actions',
+      description: 'Lets Nomad open apps, set timers and alarms, dial or text, '
+          'control music and volume, check the battery, and open phone '
+          'settings. Android only.',
+      isEnabled: defaultTargetPlatform == TargetPlatform.android,
+      builtIn: true,
+      tool: _phoneActions.tool,
+    ),
     Skill(
       id: 'web_search',
       name: 'Web Search',
@@ -147,5 +162,5 @@ class SkillNotifier extends StateNotifier<List<Skill>> {
 }
 
 final skillProvider = StateNotifierProvider<SkillNotifier, List<Skill>>((ref) {
-  return SkillNotifier();
+  return SkillNotifier(PhoneActions(ref.watch(assistantPlatformProvider)));
 });

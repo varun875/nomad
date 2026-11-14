@@ -15,12 +15,15 @@ import 'features/code/code_screen.dart';
 import 'features/creations/creations_screen.dart';
 
 import 'features/creations/creation_app_screen.dart';
+import 'features/creations/creation_preview.dart';
 import 'features/models/models_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'features/settings/about_screen.dart';
 import 'features/settings/license_screen.dart';
 import 'core/widgets/nomad_shell.dart';
+import 'core/models/hf_model.dart';
 import 'core/services/inference_service.dart';
+import 'core/utils/pre_load_cleanup.dart';
 import 'core/services/assistant_platform_service.dart';
 import 'core/services/search_service.dart';
 import 'core/services/memory_service.dart';
@@ -73,11 +76,29 @@ void main() async {
   // Web search: TinyFish (per-user Monid key) when configured, else DuckDuckGo.
   await SearchService().loadFromStorage();
 
+  // Release inactive creation webviews before any model load.
+  PreLoadCleanup.register(CreationWebviewRegistry.releaseInactive);
+
   // Low-RAM phones load on demand, avoiding native allocations during startup.
-  if (onboarded && !PerformanceService.instance.isLowEnd) {
-    final savedModelId = prefs.getString('selectedModelId');
+  if (onboarded) {
+    var savedModelId = prefs.getString('selectedModelId');
     if (savedModelId != null && savedModelId.isNotEmpty) {
-      unawaited(InferenceService().warmUp(savedModelId));
+      // OOM crash-loop guard: two consecutive process deaths during a model
+      // load mean auto-restore keeps taking the app down. Restore into the
+      // smallest downloaded model (the Nano/Lite safe tiers first) instead of
+      // crash-looping on the big one.
+      final crashes = prefs.getInt(InferenceService.loadCrashGuardKey) ?? 0;
+      if (crashes >= 2) {
+        final fallbackId = _smallestDownloadedModelId(Hive.box('models'));
+        if (fallbackId != null && fallbackId != savedModelId) {
+          await prefs.setString('selectedModelId', fallbackId);
+          savedModelId = fallbackId;
+        }
+        await prefs.setInt(InferenceService.loadCrashGuardKey, 0);
+      }
+      if (!PerformanceService.instance.isLowEnd) {
+        unawaited(InferenceService().warmUp(savedModelId));
+      }
     }
   }
 
@@ -94,7 +115,6 @@ void main() async {
   }
 
   runApp(ProviderScope(child: NomadApp(onboarded: onboarded)));
-
   // Defer non-critical init until after the first frame so cold start doesn't
   // block on disk/notification I/O or Keystore IPC; all are needed only on later interaction.
   WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -103,6 +123,24 @@ void main() async {
     unawaited(SecureStorageService.openEncryptedBox('creations'));
     unawaited(SecureStorageService.openEncryptedBox('nomad_code_projects'));
   });
+}
+
+/// Smallest downloaded model — the OOM crash-loop guard restores into this
+/// (the Nano/Lite safe tiers naturally sort first) instead of reloading a
+/// model whose allocation keeps killing the process.
+String? _smallestDownloadedModelId(Box modelsBox) {
+  final downloaded = <HFModel>[];
+  for (final key in modelsBox.keys.toList()) {
+    try {
+      final v = modelsBox.get(key);
+      if (v == null) continue;
+      final model = HFModel.fromJson(Map<String, dynamic>.from(v as Map));
+      if (model.downloaded) downloaded.add(model);
+    } catch (_) {}
+  }
+  if (downloaded.isEmpty) return null;
+  downloaded.sort((a, b) => a.sizeMB.compareTo(b.sizeMB));
+  return downloaded.first.id;
 }
 
 class NomadTransitionPage extends CustomTransitionPage {

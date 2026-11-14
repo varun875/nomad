@@ -4,4 +4,4 @@ publish_to: none
 environment:
   sdk: ">=3.10.7 <4.0.0"
 dependencies:
-  llamadart: ^0.8.19
+  llamadart: ^0.19.4

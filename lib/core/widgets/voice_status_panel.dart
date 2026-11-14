@@ -1,8 +1,13 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../services/voice_session_controller.dart';
 import '../theme/nomad_theme.dart';
+import 'nomad_animations.dart';
 
+/// A Siri-style voice surface: one living orb that says what the assistant is
+/// doing, with the transcript and the controls kept out of its way.
 class VoiceStatusPanel extends StatelessWidget {
   const VoiceStatusPanel({
     super.key,
@@ -70,6 +75,46 @@ class VoiceStatusPanel extends StatelessWidget {
           },
       };
 
+  /// Hue shifts with the conversation so the orb reads at a glance: cool blue
+  /// while listening, violet while thinking, green while replying.
+  List<Color> get _orbColors => switch (session.phase) {
+        VoicePhase.listening => const [
+            Color(0xFF25C6FF),
+            Color(0xFF7C5CFF),
+            Color(0xFF00E5C3),
+          ],
+        VoicePhase.thinking => const [
+            Color(0xFF8E7BFF),
+            Color(0xFFC86DD7),
+            Color(0xFF4C6FFF),
+          ],
+        VoicePhase.speaking => const [
+            Color(0xFF3DDC97),
+            Color(0xFF35C5F0),
+            Color(0xFF7C5CFF),
+          ],
+        VoicePhase.error => const [
+            Color(0xFFFF8A80),
+            Color(0xFFB388FF),
+            Color(0xFFFF8A80),
+          ],
+        _ => const [
+            Color(0xFF9AA8C7),
+            Color(0xFF6E7FA8),
+            Color(0xFF9AA8C7),
+          ],
+      };
+
+  bool get _orbMoves => switch (session.phase) {
+        VoicePhase.starting ||
+        VoicePhase.listening ||
+        VoicePhase.processing ||
+        VoicePhase.thinking ||
+        VoicePhase.speaking =>
+          true,
+        VoicePhase.idle || VoicePhase.paused || VoicePhase.error => false,
+      };
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<NomadColorsExtension>()!;
@@ -91,31 +136,65 @@ class VoiceStatusPanel extends StatelessWidget {
         width: double.infinity,
         decoration: BoxDecoration(
           color: colors.surface,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(28),
           border: Border.all(color: colors.border),
         ),
         constraints: BoxConstraints(
             maxHeight:
-                (MediaQuery.sizeOf(context).height * .32).clamp(130, 250)),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(_title,
-                  key: const ValueKey('voice-status'), style: text.titleMedium),
-              const SizedBox(height: 6),
-              if (session.transcript.isNotEmpty) ...[
-                Text(session.transcript,
-                    key: const ValueKey('voice-transcript'),
-                    style: text.bodyMedium),
-                const SizedBox(height: 6),
-              ],
-              Text(_hint,
-                  style: text.bodySmall?.copyWith(color: colors.textSecondary)),
-              const SizedBox(height: 4),
-              Wrap(
+                (MediaQuery.sizeOf(context).height * .42).clamp(180, 320)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(18, 16, 18, 4),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    ValueListenableBuilder<double>(
+                      valueListenable: session.soundLevel,
+                      builder: (context, level, _) {
+                        final raw = level.clamp(-50.0, 50.0);
+                        final normalized =
+                            math.max(0.0, (raw + 30.0) / 50.0).clamp(0.0, 1.0);
+                        return NomadVoiceOrb(
+                          level: normalized,
+                          colors: _orbColors,
+                          size: 80,
+                          animating: _orbMoves,
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    Text(_title,
+                        key: const ValueKey('voice-status'),
+                        textAlign: TextAlign.center,
+                        style: text.titleMedium),
+                    if (session.transcript.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(session.transcript,
+                          key: const ValueKey('voice-transcript'),
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: text.bodyLarge),
+                    ],
+                    const SizedBox(height: 4),
+                    Text(_hint,
+                        textAlign: TextAlign.center,
+                        style: text.bodySmall
+                            ?.copyWith(color: colors.textSecondary)),
+                  ],
+                ),
+              ),
+            ),
+            // Actions stay pinned below the scroll area so they can never be
+            // pushed off a short screen by a long transcript.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              child: Wrap(
+                alignment: WrapAlignment.center,
                 spacing: 4,
                 children: [
                   if (needsRetry)
@@ -151,8 +230,8 @@ class VoiceStatusPanel extends StatelessWidget {
                   ),
                 ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );

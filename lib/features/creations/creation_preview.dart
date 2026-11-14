@@ -34,6 +34,39 @@ String creationHtmlWithCsp(String html) {
 bool isLocalCreationUrl(String url) =>
     url == 'about:blank' || url.startsWith('data:') || url.startsWith('blob:');
 
+/// Tracks live creation preview webviews so inactive previews can be
+/// unmounted/disposed before a native model load. The most recently
+/// initialized preview is treated as active (the creation on screen).
+class CreationWebviewRegistry {
+  CreationWebviewRegistry._();
+
+  static final Map<Object, void Function()> _releases = {};
+  static Object? _activeKey;
+
+  static void register(Object key, void Function() release) {
+    _releases[key] = release;
+    _activeKey = key;
+  }
+
+  static void unregister(Object key) {
+    _releases.remove(key);
+    if (_activeKey == key) _activeKey = null;
+  }
+
+  /// Unmounts every registered preview except the active one so their webview
+  /// memory is available for the model allocation. Released previews reload
+  /// when they are tapped again.
+  static void releaseInactive() {
+    for (final entry in _releases.entries.toList()) {
+      if (entry.key == _activeKey) continue;
+      _releases.remove(entry.key);
+      try {
+        entry.value();
+      } catch (_) {}
+    }
+  }
+}
+
 class CreationPreview extends ConsumerStatefulWidget {
   const CreationPreview({super.key, required this.html});
 
@@ -47,6 +80,7 @@ class _CreationPreviewState extends ConsumerState<CreationPreview> {
   WindowsWebViewController? _windowsController;
   Widget? _view;
   bool _loading = true;
+  bool _released = false;
   String? _error;
 
   @override
@@ -62,6 +96,7 @@ class _CreationPreviewState extends ConsumerState<CreationPreview> {
             'Embedded creation previews are not available on the web.');
       }
       final html = creationHtmlWithCsp(widget.html);
+      CreationWebviewRegistry.register(this, _release);
       switch (defaultTargetPlatform) {
         case TargetPlatform.windows:
           final platform = await ref.read(creationWindowsPlatformProvider)();
@@ -149,8 +184,22 @@ class _CreationPreviewState extends ConsumerState<CreationPreview> {
     });
   }
 
+  /// Unmounts this preview's webview and releases its controllers so the
+  /// memory is available for a model load. The preview reloads when tapped.
+  void _release() {
+    _windowsController?.dispose().ignore();
+    _windowsController = null;
+    // Dropping the view unmounts the platform webview and releases the
+    // mobile controller it references.
+    _view = null;
+    _loading = false;
+    _released = true;
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
+    CreationWebviewRegistry.unregister(this);
     // The Windows controller owns its texture and WebView2 instance, including
     // initialization still in flight when the user closes the viewer.
     _windowsController?.dispose().ignore();
@@ -160,6 +209,21 @@ class _CreationPreviewState extends ConsumerState<CreationPreview> {
   @override
   Widget build(BuildContext context) {
     if (_error != null) return CreationPreviewError(message: _error!);
+    if (_released) {
+      return GestureDetector(
+        onTap: () {
+          setState(() {
+            _released = false;
+            _loading = true;
+          });
+          _initialize();
+        },
+        child: const ColoredBox(
+          color: Colors.white,
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
     return ColoredBox(
       color: Colors.white,
       child: Stack(

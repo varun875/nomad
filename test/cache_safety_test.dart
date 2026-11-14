@@ -63,7 +63,10 @@ void main() {
       home: const SettingsScreen(),
     )));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Clear cache'));
+    // The settings list builds children lazily: scroll until the Clear cache
+    // tile exists in the tree before interacting with it.
+    await tester.scrollUntilVisible(find.text('Clear cache'), 200,
+        scrollable: find.byType(Scrollable).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Clear cache'));
     await tester.pumpAndSettle();

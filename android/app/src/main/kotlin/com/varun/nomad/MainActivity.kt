@@ -3,6 +3,7 @@ package com.varun.nomad
 import android.app.ActivityManager
 import android.app.SearchManager
 import android.app.role.RoleManager
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
@@ -42,6 +43,18 @@ class MainActivity : FlutterActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         captureAssistantLaunch(intent)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // TRIM_MEMORY_RUNNING_CRITICAL: hand the pressure signal to Flutter so
+        // WidgetsBindingObservers can drop caches and release the model once
+        // inference is idle.
+        if (level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+            flutterEngine?.dartExecutor?.binaryMessenger?.let {
+                MethodChannel(it, "flutter/system").invokeMethod("memoryPressure", null)
+            }
+        }
     }
 
     private fun captureAssistantLaunch(launchIntent: Intent?) {

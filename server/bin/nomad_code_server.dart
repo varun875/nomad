@@ -7,6 +7,7 @@ import 'package:llamadart/llamadart.dart';
 const _modelNames = <String, String>{
   'nomad-nano-lfm25-450m': 'Nomad Nano',
   'nomad-lite-qwen-3.5-0.8b': 'Nomad Lite',
+  'nomad-omni-lfm3-2b': 'Nomad Omni',
   'nomad-steady-lfm25-3b': 'Nomad Steady',
   'nomad-steady-gemma4-e2b': 'Nomad Steady',
   'nomad-smart-gemma4-e4b': 'Nomad Smart',
@@ -245,7 +246,10 @@ Future<void> _chatCompletion(HttpRequest request, Directory modelDir) async {
   final engine = LlamaEngine(LlamaBackend());
   var responseStarted = false;
   try {
-    await engine.loadModel(model.path, modelParams: const ModelParams(contextSize: 4096));
+    await engine.setModel(
+      LlamaModel(ModelSource.path(model.path)),
+      params: const ModelParams(contextSize: 4096),
+    );
     final id = 'chatcmpl-${DateTime.now().millisecondsSinceEpoch}';
     final created = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     if (stream) {

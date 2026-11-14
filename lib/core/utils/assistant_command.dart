@@ -15,16 +15,10 @@ class AssistantCommand {
   final String? response;
 
   static AssistantCommand? parse(String input, {DateTime? now}) {
-    final text = input
-        .trim()
-        .toLowerCase()
-        .replaceFirst(
-            RegExp(
-                r'^(?:(?:hey|ok|okay) nomad[, ]+)?(?:please |(?:can|could|would) you (?:please )?)?'),
-            '')
-        .replaceFirst(RegExp(r'\s+(?:please|for me)[.!?]*$'), '')
-        .replaceFirst(RegExp(r'[.!?]+$'), '')
-        .trim();
+    final text = _normalize(input, lowercase: true);
+    // Message bodies keep the speaker's capitalisation: "saying I am running
+    // late" should not become an all-lowercase text.
+    final spoken = _normalize(input, lowercase: false);
     if (RegExp(
             r'^(?:stop|cancel|goodbye|bye|stop listening|end voice|exit voice|end conversation)$')
         .hasMatch(text)) {
@@ -45,7 +39,9 @@ class AssistantCommand {
     if (text == 'what can you do' || text == 'help me use voice') {
       return const AssistantCommand.reply(
           'I can answer questions, open apps, set timers and alarms, '
-          'show directions, and open phone settings. Tap the middle button to interrupt me.');
+          'show directions, dial a number, start a text, control music and '
+          'volume, check your battery, and open phone settings. '
+          'Tap the middle button to interrupt me.');
     }
 
     final timer =
@@ -91,6 +87,77 @@ class AssistantCommand {
     if (directions != null) {
       return AssistantCommand('directions', {'destination': directions[1]!});
     }
+    if (RegExp(
+            r'^(?:play|start|resume)(?: (?:some|the|my))? (?:music|songs?|playback)$')
+        .hasMatch(text)) {
+      return const AssistantCommand('mediaPlay');
+    }
+    if (RegExp(r'^(?:pause|stop)(?: (?:the|my))? (?:music|song|playback)$')
+        .hasMatch(text)) {
+      return const AssistantCommand('mediaPause');
+    }
+    if (RegExp(r'^(?:next|skip)(?: (?:the|this))? (?:song|track)$')
+        .hasMatch(text)) {
+      return const AssistantCommand('mediaNext');
+    }
+    if (RegExp(
+            r'^(?:previous|last|go back)(?: (?:the|one))? (?:song|track)$')
+        .hasMatch(text)) {
+      return const AssistantCommand('mediaPrevious');
+    }
+    if (RegExp(
+            r'^(?:volume up|turn (?:it|the volume) up|louder|increase (?:the )?volume)$')
+        .hasMatch(text)) {
+      return const AssistantCommand('volumeUp');
+    }
+    if (RegExp(
+            r'^(?:volume down|turn (?:it|the volume) down|quieter|(?:decrease|lower) (?:the )?volume)$')
+        .hasMatch(text)) {
+      return const AssistantCommand('volumeDown');
+    }
+    if (RegExp(r'^(?:mute|mute the volume|silence)$').hasMatch(text)) {
+      return const AssistantCommand('volumeMute');
+    }
+    if (RegExp(r'^(?:unmute|unmute the volume)$').hasMatch(text)) {
+      return const AssistantCommand('volumeUnmute');
+    }
+    if (RegExp(
+            r"^(?:battery(?: level| status| percentage)?|how(?:'s| is) (?:my|the) battery|how much battery (?:do i have|is left))$")
+        .hasMatch(text)) {
+      return const AssistantCommand('battery');
+    }
+    final call = RegExp(r'^(?:call|dial|phone) (\+?\d[\d\s().-]{2,})$')
+        .firstMatch(text);
+    if (call != null) {
+      final number = _phoneNumber(call[1]!);
+      if (number != null) return AssistantCommand('call', {'number': number});
+    }
+    final message = RegExp(
+            r'^(?:text|message|send (?:a )?(?:text|message|sms) to) (\+?\d[\d\s().-]{2,})(?: (?:saying|that says|with (?:the )?message)[,]? (.+))?$',
+            caseSensitive: false)
+        .firstMatch(spoken);
+    if (message != null) {
+      final number = _phoneNumber(message[1]!);
+      if (number != null) {
+        final body = message[2]?.trim();
+        return AssistantCommand('message', {
+          'number': number,
+          if (body != null && body.isNotEmpty) 'body': body,
+        });
+      }
+    }
+    if (RegExp(r'^(?:call|dial|text|message) (.+)$').hasMatch(text)) {
+      return const AssistantCommand.reply(
+          'I can dial or text a phone number, but I do not have access to your '
+          'contacts yet. Try saying the number, like call 555 123 4567.');
+    }
+    final url = RegExp(
+            r'^(?:open|go to|visit) ((?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/\S*)?)$',
+            caseSensitive: false)
+        .firstMatch(text);
+    if (url != null) {
+      return AssistantCommand('openUrl', {'url': url[1]!});
+    }
     final search = RegExp(
             r'^(?:search (?:the web )?for|search the web|google|look up) (.+)$')
         .firstMatch(text);
@@ -110,6 +177,34 @@ class AssistantCommand {
           {'name': app[1]!.replaceFirst(RegExp(r' (?:app|application)$'), '')});
     }
     return null;
+  }
+
+  /// Strips politeness so an action can be anchored to the request itself.
+  /// Case is preserved only for text that must survive verbatim.
+  static String _normalize(String input, {required bool lowercase}) {
+    var text = input
+        .trim()
+        .replaceFirst(
+            RegExp(
+                r'^(?:(?:hey|ok|okay) nomad[, ]+)?(?:please |(?:can|could|would) you (?:please )?)?',
+                caseSensitive: false),
+            '')
+        .replaceFirst(
+            RegExp(r'\s+(?:please|for me)[.!?]*$', caseSensitive: false), '')
+        .replaceFirst(RegExp(r'[.!?]+$'), '')
+        .trim();
+    if (lowercase) text = text.toLowerCase();
+    return text;
+  }
+
+  /// Normalizes a spoken phone number to digits (plus a leading +) so the
+  /// dialer and messaging apps receive something they can parse.
+  static String? _phoneNumber(String value) {
+    final trimmed = value.trim();
+    if (!RegExp(r'^\+?[\d\s().-]+$').hasMatch(trimmed)) return null;
+    final digits = trimmed.replaceAll(RegExp(r'\D'), '');
+    if (digits.length < 3 || digits.length > 15) return null;
+    return '${trimmed.startsWith('+') ? '+' : ''}$digits';
   }
 
   static int? _duration(String text) {

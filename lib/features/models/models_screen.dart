@@ -388,15 +388,21 @@ class _ModelCard extends StatelessWidget {
     return '$sizeMB MB';
   }
 
-  String _formatDownloadedSize() {
-    final totalMB = model.sizeMB;
-    final downloadedMB = (totalMB * model.progress / 100).round();
-    if (totalMB >= 1024) {
-      final dgb = (downloadedMB / 1024).toStringAsFixed(1);
-      final tgb = (totalMB / 1024).toStringAsFixed(1);
-      return '$dgb / $tgb GB';
+  /// Total download payload: the model file plus its vision projector.
+  int get _totalBytes =>
+      (model.totalBytes ?? model.sizeMB * 1024 * 1024) + (model.mmprojBytes ?? 0);
+
+  String _formatBytes(num bytes) {
+    if (bytes >= 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
     }
-    return '$downloadedMB / $totalMB MB';
+    return '${(bytes / (1024 * 1024)).round()} MB';
+  }
+
+  String _formatDownloadedSize() {
+    final downloadedBytes =
+        model.downloadedBytes ?? (_totalBytes * model.progress / 100).round();
+    return '${_formatBytes(downloadedBytes)} / ${_formatBytes(_totalBytes)}';
   }
 
   /// Build the one-liner under the progress ring:
@@ -417,8 +423,9 @@ class _ModelCard extends StatelessWidget {
   String? _formatEta() {
     final speed = model.downloadSpeed; // MB/s
     if (speed == null || speed <= 0 || model.progress <= 0) return null;
-    final totalMB = model.sizeMB.toDouble();
-    final remainingMB = totalMB * (1.0 - model.progress / 100.0);
+    final downloadedBytes =
+        model.downloadedBytes ?? (_totalBytes * model.progress / 100);
+    final remainingMB = (_totalBytes - downloadedBytes) / (1024 * 1024);
     final secondsLeft = (remainingMB / speed).round();
     if (secondsLeft <= 0) return null;
     if (secondsLeft < 60) return '~${secondsLeft}s left';

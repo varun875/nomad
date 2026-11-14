@@ -6,6 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../utils/live_transcript.dart';
 import '../utils/speech_text.dart';
 import 'assistant_platform_service.dart';
+import 'audio_capture_service.dart';
+import 'lfm3_tts_service.dart';
 import 'speech_input_service.dart';
 import 'tts_service.dart';
 
@@ -44,8 +46,9 @@ typedef VoiceRequestHandler = Future<void> Function(
 final voiceSessionProvider = Provider<VoiceSessionController>((ref) {
   final controller = VoiceSessionController(
     input: SystemSpeechInput(),
-    output: TtsService(),
+    output: SmartSpeechOutput(),
     platform: ref.watch(assistantPlatformProvider),
+    capture: DeviceAudioCapture(),
   );
   ref.onDispose(controller.dispose);
   return controller;
@@ -59,13 +62,15 @@ class VoiceSessionController extends ChangeNotifier {
     required SpeechInput input,
     required SpeechOutput output,
     required AssistantPlatformService platform,
+    AudioCapture? capture,
     this.finalResultWait = const Duration(milliseconds: 1800),
     this.silenceWait = const Duration(seconds: 3),
     this.restartDelay = const Duration(milliseconds: 400),
     this.startTimeout = const Duration(seconds: 6),
   })  : _input = input,
         _output = output,
-        _platform = platform {
+        _platform = platform,
+        _capture = capture {
     _interruptions = _platform.interruptions.listen((_) {
       if (isActive && phase != VoicePhase.paused) {
         unawaited(pause(interrupted: true));
@@ -76,6 +81,7 @@ class VoiceSessionController extends ChangeNotifier {
   final SpeechInput _input;
   final SpeechOutput _output;
   final AssistantPlatformService _platform;
+  final AudioCapture? _capture;
   final Duration finalResultWait;
   final Duration silenceWait;
   final Duration restartDelay;
@@ -91,12 +97,18 @@ class VoiceSessionController extends ChangeNotifier {
   String get transcript => _transcript;
   String _lastHeard = '';
   String get lastHeard => _lastHeard;
+
+  /// Path of the WAV captured for the current turn, when the selected model
+  /// takes audio directly. Cleared at the start of every turn.
+  String? _lastAudioPath;
+  String? get lastAudioPath => _lastAudioPath;
   String _localeId = 'en-US';
   Object? _owner;
   VoiceRequestHandler? _onRequest;
   VoidCallback? _cancelRequest;
   bool _disposed = false;
   bool _listenArmed = false;
+  bool _audioTurns = false;
   int _command = 0;
   int _epoch = 0;
   int _listenId = 0;
@@ -149,6 +161,7 @@ class VoiceSessionController extends ChangeNotifier {
     return _withAudio(() async {
       for (final operation in <Future<void> Function()>[
         _input.cancel,
+        _capture?.cancel ?? () async {},
         _output.stop,
         _platform.releaseAudioFocus,
       ]) {
@@ -169,6 +182,7 @@ class VoiceSessionController extends ChangeNotifier {
     required VoidCallback cancelRequest,
     required String localeId,
     String? initialPrompt,
+    bool audioTurns = false,
   }) async {
     if (_disposed) return;
     final command = ++_command;
@@ -183,6 +197,8 @@ class VoiceSessionController extends ChangeNotifier {
     _onRequest = onRequest;
     _cancelRequest = cancelRequest;
     _localeId = localeId;
+    _audioTurns = audioTurns && _capture != null;
+    _lastAudioPath = null;
     _phase = VoicePhase.starting;
     _issue = null;
     _transcript = '';
@@ -199,19 +215,31 @@ class VoiceSessionController extends ChangeNotifier {
       if (!_current(epoch) || command != _command) return;
       if (!clean) throw const VoiceSessionException(VoiceIssue.audioBusy);
 
-      if (!await _platform.isSpeechRecognitionAvailable()) {
-        throw const VoiceSessionException(VoiceIssue.recognizerUnavailable);
-      }
-      if (!_current(epoch)) return;
-      final available =
-          await _input.initialize().timeout(const Duration(seconds: 45));
-      if (!_current(epoch)) return;
-      if (!available) {
-        final permission = await _input.hasPermission;
+      if (_audioTurns) {
+        // Audio-capable models hear the raw utterance, so the system recognizer
+        // is skipped entirely and the microphone is owned by one recorder.
+        final ready = await _capture!
+            .initialize()
+            .timeout(const Duration(seconds: 20));
         if (!_current(epoch)) return;
-        throw VoiceSessionException(permission
-            ? VoiceIssue.recognizerUnavailable
-            : VoiceIssue.permission);
+        if (!ready) {
+          throw const VoiceSessionException(VoiceIssue.permission);
+        }
+      } else {
+        if (!await _platform.isSpeechRecognitionAvailable()) {
+          throw const VoiceSessionException(VoiceIssue.recognizerUnavailable);
+        }
+        if (!_current(epoch)) return;
+        final available =
+            await _input.initialize().timeout(const Duration(seconds: 45));
+        if (!_current(epoch)) return;
+        if (!available) {
+          final permission = await _input.hasPermission;
+          if (!_current(epoch)) return;
+          throw VoiceSessionException(permission
+              ? VoiceIssue.recognizerUnavailable
+              : VoiceIssue.permission);
+        }
       }
       final canSpeak = await _output
           .initialize(localeId: localeId)
@@ -255,8 +283,38 @@ class VoiceSessionController extends ChangeNotifier {
     _cancelTimers();
     _phase = VoicePhase.starting;
     _transcript = '';
+    _lastAudioPath = null;
     soundLevel.value = -50;
     _changed();
+    if (_audioTurns) {
+      try {
+        await _withAudio(() async {
+          if (!_current(epoch) || id != _listenId) return;
+          _listenArmed = true;
+          _startTimer = Timer(startTimeout, () {
+            if (_accepts(epoch, id) && phase == VoicePhase.starting) {
+              _onError(epoch, id, 'error_busy');
+            }
+          });
+          _sessionTimer = Timer(const Duration(seconds: 50), () {
+            if (_accepts(epoch, id)) _finishListening(epoch, id);
+          });
+          await _capture!.start().timeout(startTimeout);
+          if (!_current(epoch) || id != _listenId) return;
+          _startTimer?.cancel();
+          if (phase == VoicePhase.starting) {
+            _phase = VoicePhase.listening;
+            _changed();
+          }
+        });
+      } catch (error) {
+        debugPrint('Could not open the microphone for audio input: $error');
+        if (_current(epoch) && id == _listenId) {
+          _onError(epoch, id, 'error_audio_error');
+        }
+      }
+      return;
+    }
     try {
       await _withAudio(() async {
         if (!_current(epoch) || id != _listenId) return;
@@ -334,6 +392,33 @@ class VoiceSessionController extends ChangeNotifier {
     _startTimer?.cancel();
     soundLevel.value = -50;
     _changed();
+    if (_audioTurns) {
+      _finalTimer?.cancel();
+      unawaited(_withAudio(() async {
+        String? path;
+        try {
+          path = await _capture!.stop().timeout(const Duration(seconds: 4));
+        } catch (error) {
+          debugPrint('Could not finish recording: $error');
+        }
+        if (!_accepts(epoch, id)) return;
+        _listenArmed = false;
+        ++_listenId;
+        _cancelTimers();
+        if (path == null || path.isEmpty) {
+          if (++_emptyAttempts <= 2) {
+            _scheduleListen(epoch);
+          } else {
+            _issue = VoiceIssue.noSpeech;
+            unawaited(pause(keepIssue: true));
+          }
+          return;
+        }
+        _transientAttempts = 0;
+        _launchTurn(epoch, audioPath: path);
+      }));
+      return;
+    }
     _finalTimer = Timer(finalResultWait, () => _completeRecognition(epoch, id));
     unawaited(_withAudio(() async {
       if (_accepts(epoch, id)) {
@@ -403,15 +488,16 @@ class VoiceSessionController extends ChangeNotifier {
     });
   }
 
-  void _launchTurn(int epoch) {
+  void _launchTurn(int epoch, {String? audioPath}) {
     final request = _onRequest;
     if (!_current(epoch) || request == null || _turnDone != null) return;
     final text = _transcript.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty && audioPath == null) return;
     _listenArmed = false;
     ++_listenId;
     _cancelTimers();
     _lastHeard = text;
+    _lastAudioPath = audioPath;
     _phase = VoicePhase.thinking;
     _issue = null;
     soundLevel.value = -50;

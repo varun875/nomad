@@ -1,21 +1,29 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:llamadart/llamadart.dart';
 import '../utils/logger.dart';
+import 'brave_search_provider.dart';
 import 'duckduckgo_search_provider.dart';
 import 'search_provider.dart';
+import 'searxng_search_provider.dart';
 import 'tinyfish_search_provider.dart';
 
 /// Facade for web search backed by a pluggable [WebSearchProvider].
 ///
-/// Uses TinyFish via Monid when the user has supplied their own API key
-/// (Settings -> Web Search), otherwise falls back to the keyless DuckDuckGo
-/// provider. The key is stored in the platform keychain, never in the repo.
+/// Backend selection, highest priority first — every option is opt-in and
+/// zero-config DuckDuckGo is always the fallback:
+/// 1. Brave Search API (Settings, bring-your-own key)
+/// 2. SearXNG (Settings, self-hosted instance URL)
+/// 3. TinyFish via Monid (Settings, per-user Monid key)
+/// 4. DuckDuckGo (keyless)
+/// Keys and URLs are stored in the platform keychain, never in the repo.
 class SearchService {
   static final SearchService _instance = SearchService._internal();
   factory SearchService() => _instance;
   SearchService._internal();
 
   static const _tinyFishKeyStorage = 'monid_api_key';
+  static const _braveKeyStorage = 'brave_api_key';
+  static const _searxngUrlStorage = 'searxng_url';
   static const _secureStorage = FlutterSecureStorage();
 
   WebSearchProvider _provider = const DuckDuckGoProvider();
@@ -45,27 +53,92 @@ class SearchService {
   /// Stores (or clears, when [key] is empty) the user's Monid key and applies
   /// it to the active provider immediately.
   Future<void> setTinyFishApiKey(String key) async {
-    final trimmed = key.trim();
-    try {
-      if (trimmed.isEmpty) {
-        await _secureStorage.delete(key: _tinyFishKeyStorage);
-      } else {
-        await _secureStorage.write(key: _tinyFishKeyStorage, value: trimmed);
-      }
-    } catch (e) {
-      Log.w('Search', 'Could not save Monid API key: $e');
-    }
+    await _writeOrClear(_tinyFishKeyStorage, key);
     await loadFromStorage();
   }
 
-  /// Reads the stored key and selects the matching backend. Falls back to
-  /// DuckDuckGo when no key is stored or the keychain is unavailable, so search
-  /// never hard-fails.
+  /// Whether a Brave Search API key is currently stored.
+  Future<bool> hasBraveKey() async => (await readBraveApiKey()).isNotEmpty;
+
+  /// Returns the stored Brave Search API key, or an empty string if none set.
+  Future<String> readBraveApiKey() async {
+    try {
+      return (await _secureStorage.read(key: _braveKeyStorage))?.trim() ?? '';
+    } catch (e) {
+      Log.w('Search', 'Could not read Brave API key: $e');
+      return '';
+    }
+  }
+
+  /// Stores (or clears, when [key] is empty) the user's Brave Search API key
+  /// and applies it to the active provider immediately.
+  Future<void> setBraveApiKey(String key) async {
+    await _writeOrClear(_braveKeyStorage, key);
+    await loadFromStorage();
+  }
+
+  /// Whether a self-hosted SearXNG URL is currently stored.
+  Future<bool> hasSearxngUrl() async => (await readSearxngUrl()).isNotEmpty;
+
+  /// Returns the stored SearXNG instance URL, or an empty string if none set.
+  Future<String> readSearxngUrl() async {
+    try {
+      return (await _secureStorage.read(key: _searxngUrlStorage))?.trim() ?? '';
+    } catch (e) {
+      Log.w('Search', 'Could not read SearXNG URL: $e');
+      return '';
+    }
+  }
+
+  /// Stores (or clears, when [url] is empty) the user's self-hosted SearXNG
+  /// instance URL and applies it to the active provider immediately.
+  Future<void> setSearxngUrl(String url) async {
+    await _writeOrClear(_searxngUrlStorage, url);
+    await loadFromStorage();
+  }
+
+  Future<void> _writeOrClear(String storageKey, String value) async {
+    final trimmed = value.trim();
+    try {
+      if (trimmed.isEmpty) {
+        await _secureStorage.delete(key: storageKey);
+      } else {
+        await _secureStorage.write(key: storageKey, value: trimmed);
+      }
+    } catch (e) {
+      Log.w('Search', 'Could not save $storageKey: $e');
+    }
+  }
+
+  /// Reads the stored keys/URL and selects the matching backend, highest
+  /// priority first (Brave > SearXNG > TinyFish). Falls back to DuckDuckGo
+  /// when nothing is stored or the keychain is unavailable, so search never
+  /// hard-fails.
   Future<void> loadFromStorage() async {
+    final braveKey = await readBraveApiKey();
+    if (braveKey.isNotEmpty) {
+      configure(BraveSearchProvider(apiKey: braveKey));
+      return;
+    }
+    final searxngUrl = await readSearxngUrl();
+    if (searxngUrl.isNotEmpty) {
+      // The user explicitly chose this instance, so self-hosted LAN addresses
+      // (e.g. http://192.168.1.10:8888) are acceptable targets.
+      configure(SearxngProvider(baseUrl: searxngUrl, allowPrivate: true));
+      return;
+    }
     final key = await readTinyFishApiKey();
     configure(key.isEmpty
         ? const DuckDuckGoProvider()
         : TinyFishSearchProvider(apiKey: key));
+  }
+
+  /// Human-readable name of the active backend for the Settings tile.
+  Future<String> activeBackendLabel() async {
+    if (await hasBraveKey()) return 'Brave Search · key set';
+    if (await hasSearxngUrl()) return 'SearXNG · self-hosted';
+    if (await hasTinyFishKey()) return 'TinyFish · Monid key set';
+    return 'DuckDuckGo';
   }
 
   /// Search the web and return the top [maxResults] snippets.

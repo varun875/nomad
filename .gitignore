@@ -36,6 +36,11 @@ migrate_working_dir/
 # Secrets - never commit
 .env
 
+# Android release signing - never commit
+android/key.properties
+*.jks
+*.keystore
+
 # Symbolication related
 app.*.symbols
 

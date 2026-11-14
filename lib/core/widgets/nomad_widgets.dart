@@ -2,11 +2,41 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../../l10n/app_localizations.dart';
+import '../models/hf_model.dart';
 import '../services/performance_service.dart';
 import '../theme/nomad_theme.dart';
 import 'nomad_animations.dart';
 
 enum BackdropState { idle, loading, streaming }
+
+/// Warns before selecting a model whose recommended RAM exceeds the device —
+/// Smart (7 GB+) and Pro (16 GB) on < 8 GB phones can OOM or crawl. Returns
+/// whether to proceed with the selection/load.
+Future<bool> confirmHeavyModelLoad(
+    BuildContext context, HFModel model, int deviceRamGb) async {
+  if (deviceRamGb <= 0 || deviceRamGb >= 8 || model.requiredRAM < 7) {
+    return true;
+  }
+  final proceed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text('${model.name} needs ${model.requiredRAM} GB+ RAM'),
+      content: Text('This phone has $deviceRamGb GB. ${model.name} may crash '
+          'or run very slowly. Continue?'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text('Load anyway'),
+        ),
+      ],
+    ),
+  );
+  return proceed == true;
+}
 
 class NomadSectionLabel extends StatelessWidget {
   const NomadSectionLabel(this.label, {super.key});

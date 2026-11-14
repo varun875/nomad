@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -60,6 +61,8 @@ class _Inference extends Fake implements InferenceService {
       List<Map<String, String>> history = const [],
       int maxTokens = 4096,
       List<String>? imagePaths,
+      List<String>? audioPaths,
+      ThinkingBudget? thinkingBudget,
       List<ToolDefinition>? tools}) {
     histories.add(history);
     return output();
@@ -179,6 +182,7 @@ void main() {
   Future<ProviderContainer> pumpApp(
       WidgetTester tester, _Conversations store, _Inference inference,
       {VoiceFixture? voice,
+      AssistantPlatformService? platform,
       bool modelAvailable = true,
       bool rootApp = false,
       bool onboarded = true,
@@ -210,7 +214,8 @@ void main() {
           if (voice != null) ...[
             voiceSessionProvider.overrideWithValue(voice.session),
             assistantPlatformProvider.overrideWithValue(voice.platform),
-          ],
+          ] else if (platform != null)
+            assistantPlatformProvider.overrideWithValue(platform),
         ],
         child: rootApp
             ? NomadApp(onboarded: onboarded)
@@ -555,6 +560,35 @@ void main() {
       expect(voice.input.sessions, isEmpty);
     } finally {
       await cleanVoice(tester, voice);
+    }
+  });
+
+  testWidgets('typed phone requests act without a language model turn',
+      (tester) async {
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    try {
+      const channel = MethodChannel('com.varun.nomad/assistant');
+      final calls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return {'success': true, 'message': 'Opening YouTube.'};
+      });
+      final store = _Conversations([]);
+      final inference = _Inference();
+      await pumpApp(tester, store, inference,
+          platform:
+              AssistantPlatformService(channel: channel, isAndroid: true));
+      await send(tester, 'Open YouTube');
+      expect(calls.single.method, 'executeAction');
+      expect(calls.single.arguments, {'action': 'openApp', 'name': 'youtube'});
+      expect(find.text('Opening YouTube.'), findsOneWidget);
+      expect(inference.histories, isEmpty,
+          reason: 'the phone action should answer instead of the model');
+      expect(store.state.single.messages.map((m) => m.text),
+          ['Open YouTube', 'Opening YouTube.']);
+    } finally {
+      debugDefaultTargetPlatformOverride = null;
     }
   });
 

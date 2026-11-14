@@ -8,9 +8,17 @@ import 'device_info_service.dart';
 import 'model_service.dart';
 import 'performance_service.dart';
 import '../utils/logger.dart';
+import '../utils/pre_load_cleanup.dart';
 
 class InferenceService {
   static const generationThreadsPreference = 'inferenceGenerationThreads';
+
+  /// SharedPreferences key counting in-flight native model loads. A counter
+  /// left behind means the process died mid-load (typically an OOM kill during
+  /// auto-restore); two in a row mark a crash loop so startup can fall back to
+  /// a small model instead of dying again. Cleared on load success or a
+  /// handled load failure.
+  static const loadCrashGuardKey = 'modelLoadCrashGuard';
   static final InferenceService _instance = InferenceService._internal();
   factory InferenceService() => _instance;
   InferenceService._internal({
@@ -22,7 +30,7 @@ class InferenceService {
         _isMobile = mobile ?? (Platform.isAndroid || Platform.isIOS),
         _readRam = readRam ?? ModelService.getDeviceRAM,
         _readMemory = readMemory ?? DeviceInfo.memorySnapshot {
-    LlamaEngine.configureLogging(level: LlamaLogLevel.none);
+    unawaited(LlamaLogging.configure(level: LlamaLogLevel.none));
   }
 
   @visibleForTesting
@@ -47,6 +55,7 @@ class InferenceService {
   String? _availableMmProjPath;
   String? _loadedMmProjPath;
   bool _lowRamModel = false;
+  bool _releaseProjectorAfterTurn = false;
   bool _generating = false;
   bool _releaseRequested = false;
   Future<void> _modelLifecycle = Future<void>.value();
@@ -64,6 +73,15 @@ class InferenceService {
   int get lastOutputTokens => _lastOutputTokens;
 
   bool get isLoaded => _engine != null && _loadedModelPath != null;
+
+  /// The raw engine when a model is loaded. Used by [Lfm3TtsService] to
+  /// attach `TextToSpeechEngine` without a second model load.
+  LlamaEngine? get engine => _engine;
+
+  /// Whether the loaded model is the audio-capable Omni model.
+  bool get isOmniLoaded =>
+      _loadedModelPath != null &&
+      _loadedModelPath!.replaceAll('\\', '/').contains('nomad-omni');
 
   String? get modelName =>
       _loadedModelPath?.split('/').last.replaceAll('.gguf', '');
@@ -338,7 +356,9 @@ class InferenceService {
     int ctx = 2048;
     if (_isMobile) {
       if (ram <= 4) {
-        ctx = 2048; // Safe fallback to prevent OOM crashes on low-end devices
+        // 1536 keeps prompt-evaluation peaks (history + web_search tool
+        // rounds) inside the safe profile on <= 4 GB phones.
+        ctx = 1536;
       } else if (ram <= 8) {
         // 2500 keeps history (~1375 tokens) while saving ~150MB KV vs 3072
         // on 6GB mid-range phones (e.g. Steady 2.2GB on Dimensity 6300).
@@ -365,21 +385,33 @@ class InferenceService {
     final batchThreads = _optimalBatchThreads();
     // 32-bit ARMv7 devices typically carry a ~256KB-1MB L2 per core; keep the
     // native batch small enough to stay resident instead of thrashing it.
+    // Low-end (<= 4 GB) phones get the same n_batch = 64 profile to prevent
+    // OOM spikes during web_search tool calls.
     final armv7 = Platform.isAndroid && _detectArmv7();
     // Large models on constrained (6-8GB) phones use the smaller 128/64
     // profile you requested - saves ~200MB peak during prefill vs 256/128.
     final isLargeConstrained = constrained && fileSizeMB >= 1000;
-    final batchSize = armv7
+    final batchSize = armv7 || lowEnd
         ? 64
-        : (lowEnd || isLargeConstrained ? 128 : (constrained ? 256 : 1024));
-    final microBatchSize = armv7
+        : (isLargeConstrained ? 128 : (constrained ? 256 : 1024));
+    final microBatchSize = armv7 || lowEnd
         ? 32
-        : (lowEnd || isLargeConstrained ? 64 : (constrained ? 128 : 512));
+        : (isLargeConstrained ? 64 : (constrained ? 128 : 512));
+    // Free render-side memory (image cache, idle creation webviews) before the
+    // native allocation so the weights have the largest possible runway.
+    PreLoadCleanup.run();
+
+    final prefs = await SharedPreferences.getInstance();
+    final loadCrashes = prefs.getInt(loadCrashGuardKey) ?? 0;
+    // Persisted before the native load: a crash mid-load leaves the counter
+    // behind, which is exactly what the guard must observe.
+    await prefs.setInt(loadCrashGuardKey, loadCrashes + 1);
+
     final engine = _engineFactory();
     try {
-      await engine.loadModel(
-        localPath,
-        modelParams: ModelParams(
+      await engine.setModel(
+        LlamaModel(ModelSource.path(localPath)),
+        params: ModelParams(
           contextSize: ctx,
           gpuLayers: gpuLayers,
           // Prompt eval decodes a whole batch at once and parallelizes cleanly
@@ -395,6 +427,10 @@ class InferenceService {
               isMobile ? FlashAttention.enabled : FlashAttention.auto,
           cacheTypeK: isMobile ? KvCacheType.q8_0 : KvCacheType.f16,
           cacheTypeV: isMobile ? KvCacheType.q8_0 : KvCacheType.f16,
+          // Keep weights mmapped so Android can page out cold tensors instead
+          // of forcing resident allocations into lmkd; never mlock on mobile.
+          useMmap: true,
+          useMlock: false,
         ),
       );
 
@@ -418,7 +454,9 @@ class InferenceService {
         if (isMobile && constrained) {
           availableMmProjPath = mmProjPath;
         } else {
-          await engine.loadMultimodalProjector(mmProjPath);
+          await engine.loadMultimodalProjectorSource(
+            ModelSource.path(mmProjPath),
+          );
           loadedMmProjPath = mmProjPath;
         }
       }
@@ -430,8 +468,14 @@ class InferenceService {
       _loadedModelPath = localPath;
       _contextSize = ctx;
       _lowRamModel = lowEnd;
+      // Release the projector after each turn on <= 6 GB phones instead of
+      // keeping the vision encoder resident between messages.
+      _releaseProjectorAfterTurn = _isMobile && ram <= 6;
+      await prefs.setInt(loadCrashGuardKey, 0);
       return localPath;
     } catch (_) {
+      // A handled failure is not a crash; roll the guard back.
+      await prefs.setInt(loadCrashGuardKey, loadCrashes);
       try {
         await engine.dispose();
       } catch (error) {
@@ -443,10 +487,12 @@ class InferenceService {
 
   /// Pre-warm the engine by loading the model in the background.
   /// Call this on app start so the first message is near-instant.
-  Future<void> warmUp(String modelId) async {
-    // Loads the last-used model in the background so it's ready.
+  Future<void> warmUp(String modelId, {bool allowLowRam = false}) async {
+    // Loads the last-used model in the background so it's ready. Startup
+    // warm-up skips low-RAM phones; those pre-warm on chat open or input focus
+    // via [allowLowRam] instead.
     try {
-      if (_isMobile && await _readRam() <= 4) return;
+      if (!allowLowRam && _isMobile && await _readRam() <= 4) return;
       final directory = await ModelService.getModelDirectory();
       final modelPath =
           '${directory.path}/${modelId.replaceAll('/', '_')}.gguf';
@@ -476,6 +522,7 @@ class InferenceService {
     _loadedMmProjPath = null;
     _contextSize = null;
     _lowRamModel = false;
+    _releaseProjectorAfterTurn = false;
     await engine?.dispose();
   }
 
@@ -485,7 +532,7 @@ class InferenceService {
         if (_releaseRequested) {
           _releaseRequested = false;
           await _unloadModelInternal();
-        } else if (_lowRamModel && _loadedMmProjPath != null) {
+        } else if (_releaseProjectorAfterTurn && _loadedMmProjPath != null) {
           final projector = _loadedMmProjPath;
           try {
             await _engine!.unloadMultimodalProjector();
@@ -596,7 +643,9 @@ class InferenceService {
     List<Map<String, String>> history = const [],
     int maxTokens = 4096,
     List<String>? imagePaths,
+    List<String>? audioPaths,
     List<ToolDefinition>? tools,
+    ThinkingBudget? thinkingBudget,
   }) async* {
     if (_generating) {
       yield 'Error: Another response is still running. Finish or stop it before sending again.';
@@ -615,19 +664,23 @@ class InferenceService {
         return;
       }
 
-      // Load the vision encoder lazily on low-RAM phones: the mmproj was
-      // deferred at model load time and is only needed for image messages.
-      if (imagePaths != null && imagePaths.isNotEmpty) {
-        if (_lowRamModel && imagePaths.length > 1) {
+      // Load the projector lazily on low-RAM phones: the mmproj was deferred
+      // at model load time and is only needed for media messages.
+      final hasAudio = audioPaths != null && audioPaths.isNotEmpty;
+      final hasImages = imagePaths != null && imagePaths.isNotEmpty;
+      if (hasImages || hasAudio) {
+        if (_lowRamModel && (imagePaths?.length ?? 0) > 1) {
           yield 'Error: Use one image at a time on a low-memory phone.';
           return;
         }
         final mmProjPath = localPath.replaceAll('.gguf', '.mmproj');
-        final visionAvailable = _availableMmProjPath != null ||
+        final mediaAvailable = _availableMmProjPath != null ||
             _loadedMmProjPath != null ||
             await File(mmProjPath).exists();
-        if (!visionAvailable) {
-          yield "Error: The current model does not support image input. Switch to a vision-capable model or remove the attached image.";
+        if (!mediaAvailable) {
+          yield hasAudio
+              ? "Error: The current model cannot hear audio. Switch to an audio-capable model such as Nomad Omni."
+              : "Error: The current model does not support image input. Switch to a vision-capable model or remove the attached image.";
           return;
         }
         if (_availableMmProjPath != null && _loadedMmProjPath == null) {
@@ -643,7 +696,9 @@ class InferenceService {
               return;
             }
           }
-          await _engine!.loadMultimodalProjector(_availableMmProjPath!);
+          await _engine!.loadMultimodalProjectorSource(
+            ModelSource.path(_availableMmProjPath!),
+          );
           _loadedMmProjPath = _availableMmProjPath;
         }
       }
@@ -672,10 +727,13 @@ class InferenceService {
         ));
       }
 
-      if (imagePaths != null && imagePaths.isNotEmpty) {
+      if (hasImages || hasAudio) {
         final parts = <LlamaContentPart>[
           LlamaTextContent(prompt),
-          for (final path in imagePaths) LlamaImageContent(path: path),
+          for (final path in imagePaths ?? const <String>[])
+            LlamaImageContent(path: path),
+          for (final path in audioPaths ?? const <String>[])
+            LlamaAudioContent(path: path),
         ];
         messages.add(LlamaChatMessage.withContent(
           role: LlamaChatRole.user,
@@ -725,6 +783,7 @@ class InferenceService {
         streamBatchByteThreshold: lowEnd ? 512 : (constrained ? 384 : 256),
         reusePromptPrefix: true,
         penalty: 1.0,
+        thinkingBudget: thinkingBudget,
       );
 
       final stopwatch = Stopwatch()..start();

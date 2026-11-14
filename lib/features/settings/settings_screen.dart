@@ -12,6 +12,7 @@ import '../../core/widgets/nomad_widgets.dart';
 import '../../core/widgets/nomad_animations.dart';
 import '../../core/services/inference_service.dart';
 import '../../core/services/search_service.dart';
+import '../../core/services/searxng_search_provider.dart';
 import '../../core/widgets/rich_message_renderer.dart';
 import '../../l10n/app_localizations.dart';
 
@@ -26,7 +27,10 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _showTokenSpeed = false;
   int? _threadOverride;
-  bool _searchKeySet = false;
+  bool _wifiOnly = false;
+  bool _tinyfishSet = false;
+  bool _searxngSet = false;
+  bool _braveSet = false;
 
   @override
   void initState() {
@@ -36,14 +40,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _loadPreference() async {
     final prefs = await SharedPreferences.getInstance();
-    final hasSearchKey = await SearchService().hasTinyFishKey();
+    final search = SearchService();
+    final tinyfishSet = await search.hasTinyFishKey();
+    final searxngSet = await search.hasSearxngUrl();
+    final braveSet = await search.hasBraveKey();
     if (mounted) {
       setState(() {
         _showTokenSpeed = prefs.getBool('showTokenSpeed') ?? false;
         _threadOverride = prefs.getInt(
           InferenceService.generationThreadsPreference,
         );
-        _searchKeySet = hasSearchKey;
+        _wifiOnly = prefs.getBool('downloadsRequireWifi') ?? false;
+        _tinyfishSet = tinyfishSet;
+        _searxngSet = searxngSet;
+        _braveSet = braveSet;
       });
     }
   }
@@ -53,6 +63,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('showTokenSpeed', value);
     if (mounted) setState(() => _showTokenSpeed = value);
+  }
+
+  Future<void> _toggleWifiOnly(bool value) async {
+    HapticFeedback.selectionClick();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('downloadsRequireWifi', value);
+    if (mounted) setState(() => _wifiOnly = value);
   }
 
   Future<void> _openAssistantSettings() async {
@@ -77,11 +94,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  Future<void> _editSearchKey() async {
+  /// Shared editor for the optional web-search backends (TinyFish/Monid key,
+  /// Brave key, SearXNG URL). Values live in the platform keychain.
+  Future<void> _editSearchCredential({
+    required String title,
+    required String description,
+    required String hint,
+    required Future<String> Function() read,
+    required Future<void> Function(String value) write,
+    Future<String?> Function(String value)? validate,
+    bool obscure = true,
+  }) async {
     HapticFeedback.selectionClick();
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
     final textTheme = Theme.of(context).textTheme;
-    final existing = await SearchService().readTinyFishApiKey();
+    final existing = await read();
     if (!mounted) return;
     final controller = TextEditingController(text: existing);
     final saved = await showDialog<String>(
@@ -90,23 +117,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         backgroundColor: nomad.surface,
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(NomadRadii.dialog)),
-        title: Text('TinyFish API key', style: textTheme.headlineMedium),
+        title: Text(title, style: textTheme.headlineMedium),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Paste your own Monid API key to enable live web search. It is '
-              'stored in this device\'s secure keychain. Leave empty to use '
-              'DuckDuckGo.',
-              style: textTheme.bodySmall,
-            ),
+            Text(description, style: textTheme.bodySmall),
             const SizedBox(height: 12),
             TextField(
               controller: controller,
               autofocus: true,
-              obscureText: true,
-              decoration: const InputDecoration(hintText: 'monid_live_...'),
+              obscureText: obscure,
+              decoration: InputDecoration(hintText: hint),
             ),
           ],
         ),
@@ -134,18 +156,66 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
     controller.dispose();
     if (saved == null) return;
-    await SearchService().setTinyFishApiKey(saved);
+    final value = saved.trim();
+    if (value.isNotEmpty && validate != null) {
+      final error = await validate(value);
+      if (error != null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(error)));
+        }
+        return;
+      }
+    }
+    await write(value);
+    await _loadPreference();
     if (mounted) {
-      setState(() => _searchKeySet = saved.trim().isNotEmpty);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(saved.trim().isEmpty
-              ? 'Web search: DuckDuckGo'
-              : 'Web search: TinyFish enabled'),
+          content: Text(
+              'Web search: ${await SearchService().activeBackendLabel()}'),
         ),
       );
     }
   }
+
+  Future<void> _editSearchKey() => _editSearchCredential(
+        title: 'TinyFish API key',
+        description:
+            'Paste your own Monid API key to enable live web search. It is '
+            'stored in this device\'s secure keychain. Leave empty to use '
+            'DuckDuckGo.',
+        hint: 'monid_live_...',
+        read: SearchService().readTinyFishApiKey,
+        write: SearchService().setTinyFishApiKey,
+      );
+
+  Future<void> _editBraveKey() => _editSearchCredential(
+        title: 'Brave Search API key',
+        description:
+            'Paste your own Brave Search API key (bring your own key). It is '
+            'stored in this device\'s secure keychain and never bundled in '
+            'the app. Leave empty to disable.',
+        hint: 'BSA...',
+        read: SearchService().readBraveApiKey,
+        write: SearchService().setBraveApiKey,
+      );
+
+  Future<void> _editSearxngUrl() => _editSearchCredential(
+        title: 'SearXNG instance URL',
+        description:
+            'Point Nomad at your own SearXNG server (JSON output must be '
+            'enabled). LAN addresses like http://192.168.1.10:8888 work for '
+            'self-hosted instances. Leave empty to disable.',
+        hint: 'https://searx.example.org',
+        obscure: false,
+        read: SearchService().readSearxngUrl,
+        write: SearchService().setSearxngUrl,
+        validate: (value) async => await SearxngProvider.isAllowedSearxngUrl(
+                value, allowPrivate: true)
+            ? null
+            : 'Enter a valid SearXNG URL (https, or http for a LAN address).',
+      );
 
   Future<void> _chooseDecodeThreads() async {
     final nomad = Theme.of(context).extension<NomadColorsExtension>()!;
@@ -262,13 +332,45 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ),
                   const SizedBox(height: 16),
                   _StickerTile(
-                    title: 'Web Search',
-                    subtitle: _searchKeySet
-                        ? 'TinyFish · Monid key set'
-                        : 'DuckDuckGo · tap to add a Monid key',
+                    title: 'Wi-Fi Only Downloads',
+                    subtitle: 'Pause model downloads on mobile data',
+                    icon: Icons.wifi_rounded,
+                    trailing: CupertinoSwitch(
+                      value: _wifiOnly,
+                      activeTrackColor: nomad.textPrimary,
+                      onChanged: _toggleWifiOnly,
+                    ),
+                    onTap: () => _toggleWifiOnly(!_wifiOnly),
+                  ),
+                  const SizedBox(height: 16),
+                  _StickerTile(
+                    title: 'TinyFish Web Search',
+                    subtitle: _tinyfishSet
+                        ? 'Monid key set · tap to change'
+                        : 'Default live search · tap to add a Monid key',
                     icon: Icons.travel_explore_rounded,
                     showChevron: true,
                     onTap: _editSearchKey,
+                  ),
+                  const SizedBox(height: 16),
+                  _StickerTile(
+                    title: 'SearXNG',
+                    subtitle: _searxngSet
+                        ? 'Self-hosted instance set · tap to change'
+                        : 'Optional self-hosted search instance',
+                    icon: Icons.dns_rounded,
+                    showChevron: true,
+                    onTap: _editSearxngUrl,
+                  ),
+                  const SizedBox(height: 16),
+                  _StickerTile(
+                    title: 'Brave Search API',
+                    subtitle: _braveSet
+                        ? 'Bring-your-own key set · tap to change'
+                        : 'Optional bring-your-own key',
+                    icon: Icons.key_rounded,
+                    showChevron: true,
+                    onTap: _editBraveKey,
                   ),
                   const SizedBox(height: 28),
                   const _SectionLabel(label: 'Data'),

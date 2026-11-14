@@ -27,6 +27,7 @@ class ModelService {
           'Ultra-compact vision-language model by Liquid AI. Sub-250ms visual understanding, OCR, and chat. Runs effortlessly on 2GB RAM devices.',
       sizeMB: 229,
       totalBytes: 229313568,
+      mmprojBytes: 102815168,
       requiredRAM: 2,
       speed: 5.5,
       quality: 4.0,
@@ -39,20 +40,36 @@ class ModelService {
       description:
           'Ultra-lightweight vision model under 1B parameters. Fast inference with image understanding. Perfect for devices with limited RAM.',
       sizeMB: 533,
+      mmprojBytes: 204987232,
       requiredRAM: 3,
       speed: 5.0,
       quality: 4.0,
       capabilities: ['chat', 'vision', 'speed', 'low-ram'],
     ),
     HFModel(
+      id: 'nomad-omni-lfm3-2b',
+      name: 'Nomad Omni',
+      baseModel: 'LFM3 Omni 2B (Q4_K_M)',
+      description:
+          'Liquid AI LFM3-Omni-2B - one 2B model for text, images, video and audio, answering in text or 24 kHz speech through LiquidCodec. Its audio/vision projector (~484 MB) loads only when it is needed.',
+      sizeMB: 1049,
+      totalBytes: 1099630080,
+      mmprojBytes: 506842528,
+      requiredRAM: 6,
+      speed: 4.2,
+      quality: 4.5,
+      capabilities: ['chat', 'vision', 'omni', 'reasoning', 'balanced'],
+    ),
+    HFModel(
       id: 'nomad-steady-lfm25-3b',
       name: 'Nomad Steady',
-      baseModel: 'LFM 2.5 VL 3B (Q4_0)',
+      baseModel: 'LFM3-VL-2B (QAD Q4_0)',
       description:
-          'Liquid AI LFM 2.5 VL 3B vision-language model with fast Q4_0 ARM dot-product quantization. Mobile-optimized visual reasoning, OCR, and multimodal chat.',
-      sizeMB: 1594,
-      totalBytes: 1593894944,
-      requiredRAM: 5,
+          'Liquid AI LFM3-VL-2B - multimodal reasoning, vision, video understanding and spatial reasoning. The Quantization-Aware Distilled Q4_0 checkpoint recovers Q4_0 accuracy while staying fast on ARM dot-product silicon.',
+      sizeMB: 1001,
+      totalBytes: 1049615648,
+      mmprojBytes: 203031872,
+      requiredRAM: 4,
       speed: 4.5,
       quality: 4.6,
       capabilities: ['chat', 'vision', 'reasoning', 'balanced'],
@@ -65,6 +82,7 @@ class ModelService {
           'Finn Technologies e1 - a fine-tuned Gemma 4 E4B with advanced reasoning across math, physics, CS, biology, chemistry, philosophy, and linguistics. Excels at complex multimodal understanding and deep analysis.',
       sizeMB: 5300,
       totalBytes: 5302272800,
+      mmprojBytes: 990372640,
       requiredRAM: 7,
       speed: 3.5,
       quality: 5.0,
@@ -78,6 +96,7 @@ class ModelService {
           'Xiaomi MiMo V2.6 Distill 9B - an agentic powerhouse distilled from MiMo-V2.6-Flash. Excels at coding, tool use, multi-step reasoning, and long-horizon tasks. Requires 16GB RAM.',
       sizeMB: 5975,
       totalBytes: 6270652252,
+      mmprojBytes: 918166048,
       requiredRAM: 16,
       speed: 2.5,
       quality: 5.5,
@@ -156,8 +175,9 @@ class ModelService {
   ///
   /// 2GB: Nomad Nano
   /// 3GB: Nomad Nano + Nomad Lite
-  /// 5GB: Nomad Nano + Nomad Lite + Nomad Steady (LFM 2.5 VL 3B)
-  /// 7GB: Nomad Nano + Nomad Lite + Nomad Steady + Nomad Smart
+  /// 4GB: Nomad Nano + Nomad Lite + Nomad Steady (LFM3-VL-2B)
+  /// 6GB: + Nomad Omni (LFM3-Omni-2B: text, vision, audio)
+  /// 7GB: + Nomad Smart
   /// 16GB+: All models including Nomad Pro
   static List<HFModel> filterByRam(List<HFModel> models, int ramGB) {
     return models.where((m) => m.requiredRAM <= ramGB).toList();
@@ -184,6 +204,15 @@ class ModelService {
   /// Get all models (for settings/models page)
   static List<HFModel> getAllModels() => List.from(_allModels);
 
+  /// Whether the model takes audio input directly (omni models) instead of
+  /// relying on the device's speech recognizer.
+  static bool supportsAudio(String modelId) {
+    for (final model in _allModels) {
+      if (model.id == modelId) return model.capabilities.contains('omni');
+    }
+    return false;
+  }
+
   static String getDownloadUrl(String modelId) {
     switch (modelId) {
       case 'nomad-nano-lfm25-450m':
@@ -191,7 +220,9 @@ class ModelService {
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf';
       case 'nomad-steady-lfm25-3b':
-        return 'https://huggingface.co/LiquidAI/LFM2.5-VL-3B-GGUF/resolve/main/LFM2.5-VL-3B-Q4_0.gguf';
+        return 'https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/LFM3-VL-2B-QAD-Q4_0.gguf';
+      case 'nomad-omni-lfm3-2b':
+        return 'https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/LFM3-Omni-2B-Q4_K_M.gguf';
       case 'nomad-steady-gemma4-e2b':
         return 'https://huggingface.co/unsloth/gemma-4-E2B-it-qat-mobile-GGUF/resolve/main/gemma-4-E2B-it-qat-UD-Q2_K_XL.gguf';
       case 'nomad-smart-gemma4-e4b':
@@ -210,7 +241,9 @@ class ModelService {
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-F16.gguf';
       case 'nomad-steady-lfm25-3b':
-        return 'https://huggingface.co/LiquidAI/LFM2.5-VL-3B-GGUF/resolve/main/mmproj-LFM2.5-VL-3B-Q8_0.gguf';
+        return 'https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/mmproj-LFM3-VL-2B-Q8_0.gguf';
+      case 'nomad-omni-lfm3-2b':
+        return 'https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/mmproj-LFM3-Omni-2B-Q8_0.gguf';
       case 'nomad-steady-gemma4-e2b':
         return 'https://huggingface.co/unsloth/gemma-4-E2B-it-qat-mobile-GGUF/resolve/main/mmproj-F16.gguf';
       case 'nomad-smart-gemma4-e4b':
@@ -232,7 +265,9 @@ class ModelService {
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'unsloth/Qwen3.5-0.8B-GGUF';
       case 'nomad-steady-lfm25-3b':
-        return 'LiquidAI/LFM2.5-VL-3B-GGUF';
+        return 'LiquidAI/LFM3-VL-2B-GGUF';
+      case 'nomad-omni-lfm3-2b':
+        return 'LiquidAI/LFM3-Omni-2B-GGUF';
       case 'nomad-steady-gemma4-e2b':
         return 'unsloth/gemma-4-E2B-it-qat-mobile-GGUF';
       case 'nomad-smart-gemma4-e4b':
@@ -251,7 +286,9 @@ class ModelService {
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'Qwen3.5-0.8B-Q4_K_M.gguf';
       case 'nomad-steady-lfm25-3b':
-        return 'LFM2.5-VL-3B-Q4_0.gguf';
+        return 'LFM3-VL-2B-QAD-Q4_0.gguf';
+      case 'nomad-omni-lfm3-2b':
+        return 'LFM3-Omni-2B-Q4_K_M.gguf';
       case 'nomad-steady-gemma4-e2b':
         return 'gemma-4-E2B-it-qat-UD-Q2_K_XL.gguf';
       case 'nomad-smart-gemma4-e4b':
@@ -275,7 +312,9 @@ class ModelService {
     'nomad-lite-qwen-3.5-0.8b':
         'bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517',
     'nomad-steady-lfm25-3b':
-        '364224c6bd45b4ff4bf8af71f7be384ea166fa0f573d68bc0b6e10ef9ae7ae58',
+        '621c455376cb96a20891697deb9975c6fb47dd5ea98ed3ad1f3b7e8f24f0b1e6',
+    'nomad-omni-lfm3-2b':
+        '9f8d30e9d4fd7a9349d586e077988229b3ca0a0e4ad730897563d1eccc9893e2',
     'nomad-steady-gemma4-e2b':
         '0a5bbc20f91f92da96ab4870fa71b356c45b8500a7b8b9c3e0eb48359b72da28',
     'nomad-smart-gemma4-e4b':
@@ -292,7 +331,9 @@ class ModelService {
     'nomad-lite-qwen-3.5-0.8b':
         '56e4c6cfe73b0c82e3e82bc518d7591997e61d81f723fc41a586f4fa69ea2453',
     'nomad-steady-lfm25-3b':
-        'ecbbe7097f696dba67172738d79c9f01132cdb6c0b457606315e268df3d67e64',
+        'c5c5b58d544a18da919172d2d0368090ea1a4a351b6feb7f8a326a264a5918ab',
+    'nomad-omni-lfm3-2b':
+        '8a25f9d1931244429de404fccacfb7fb933970a36aa5688d2f5069f29c6b27b1',
     'nomad-steady-gemma4-e2b':
         '13c8966d1635d02e6727f27402880614906fa291850c07feda18dbcddf2291b6',
     'nomad-smart-gemma4-e4b':

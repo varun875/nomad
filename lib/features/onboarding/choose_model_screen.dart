@@ -8,6 +8,7 @@ import '../../core/services/model_service.dart';
 import '../../core/models/hf_model.dart';
 import '../../core/providers/download_provider.dart';
 import '../../core/providers/model_provider.dart';
+import '../../core/widgets/nomad_widgets.dart';
 import '../../l10n/app_localizations.dart';
 
 class ChooseModelScreen extends ConsumerStatefulWidget {
@@ -212,7 +213,12 @@ class _ChooseModelScreenState extends ConsumerState<ChooseModelScreen> {
 
   Future<void> _onContinue() async {
     if (_selectedModel == null || _isSubmitting) return;
-    
+
+    // Warn before committing to Smart/Pro on < 8 GB phones.
+    final proceed = await confirmHeavyModelLoad(
+        context, _selectedModel!, _deviceRAM);
+    if (!proceed || !mounted) return;
+
     HapticFeedback.lightImpact();
     setState(() => _isSubmitting = true);
     

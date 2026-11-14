@@ -75,6 +75,39 @@ void main() {
         isEmpty);
   });
 
+  test('music, volume and battery requests map to device actions', () {
+    expect(AssistantCommand.parse('Play some music')?.action, 'mediaPlay');
+    expect(AssistantCommand.parse('Pause the music')?.action, 'mediaPause');
+    expect(AssistantCommand.parse('Next track')?.action, 'mediaNext');
+    expect(AssistantCommand.parse('Previous song')?.action, 'mediaPrevious');
+    expect(AssistantCommand.parse('Turn it up')?.action, 'volumeUp');
+    expect(AssistantCommand.parse('Volume down')?.action, 'volumeDown');
+    expect(AssistantCommand.parse('Mute')?.action, 'volumeMute');
+    expect(AssistantCommand.parse('Unmute the volume')?.action, 'volumeUnmute');
+    expect(AssistantCommand.parse('How much battery do I have?')?.action,
+        'battery');
+  });
+
+  test('calls and texts normalize numbers and keep the dictated message', () {
+    expect(AssistantCommand.parse('Call 555 123 4567')?.arguments,
+        {'number': '5551234567'});
+    expect(
+        AssistantCommand.parse(
+                'Please text +44 20 7946 0958 saying I am running late')
+            ?.arguments,
+        {'number': '+442079460958', 'body': 'I am running late'});
+    expect(AssistantCommand.parse('Call Mom')?.action, 'reply');
+    expect(AssistantCommand.parse('Call 12')?.action, isNot('call'));
+  });
+
+  test('web addresses open in the browser but app names stay app launches',
+      () {
+    expect(AssistantCommand.parse('Open example.com')?.arguments,
+        {'url': 'example.com'});
+    expect(AssistantCommand.parse('Open YouTube')?.arguments,
+        {'name': 'youtube'});
+  });
+
   test('time and date are grounded in the device clock', () {
     final now = DateTime(2026, 10, 25, 15, 42);
     expect(AssistantCommand.parse('What time is it?', now: now)?.response,

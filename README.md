@@ -16,11 +16,12 @@ But it can also search the web when you want it to, combining the privacy of loc
 |-------|------|-----|-------------------|
 | Nomad Nano | 229 MB | 2 GB+ | Ultra-compact VLM: sub-250ms vision, runs on 2GB RAM |
 | Nomad Lite | 533 MB | 3 GB+ | Vision-capable, ultra-fast, sub-1B |
-| Nomad Steady | 1.7 GB | 5 GB+ | Multimodal reasoning, vision, balanced speed |
+| Nomad Omni | 1.0 GB | 6 GB+ | LFM3 Omni 2B: text, image and audio input, text or speech output |
+| Nomad Steady | 1.0 GB | 4 GB+ | LFM3-VL-2B: multimodal reasoning, vision, video understanding |
 | Nomad Smart | 5.3 GB | 7 GB+ | Flagship: vision, complex analysis, deep reasoning |
 | Nomad Pro | 6.0 GB | 16 GB | Powerhouse: coding, agentic tool use, multi-step reasoning |
 
-All models are GGUF quantizations of LFM 2.5 VL 450M/3B (Nano/Steady), Qwen 3.5 0.8B (Lite), Gemma 4 E4B (Smart), and MiMo V2.6 Distill 9B (Pro), downloaded directly from Hugging Face inside the app via the public CDN (no token needed).
+All models are GGUF quantizations of LFM 2.5 VL 450M (Nano), Qwen 3.5 0.8B (Lite), LFM3-VL-2B (Steady), LFM3 Omni 2B (Omni), Gemma 4 E4B (Smart), and MiMo V2.6 Distill 9B (Pro), downloaded directly from Hugging Face inside the app via the public CDN (no token needed).
 
 ### Vision
 
@@ -32,7 +33,8 @@ Toggle the globe icon and Nomad becomes an agent — it decides when to search, 
 
 - **TinyFish** — live, uncached browser-rendered search, 100% free via Monid, no anti-bot blocks (default)
 - **DuckDuckGo** — zero-config HTML scraper fallback
-- **SearXNG** — self-host an instance, point Nomad at your URL
+- **SearXNG** — self-host an instance, point Nomad at your URL (LAN instances like `http://192.168.1.10:8888` work; Android 17 needs the local-network permission the app declares)
+- **Brave Search API** — optional bring-your-own key in Settings; no API key is ever bundled in the APK
 
 When search is off, downloaded-model text inference runs locally. Speech recognition follows the device's speech-provider settings and may still require a connection.
 
@@ -63,9 +65,10 @@ Tap **Nomad Voice** in the chat composer. Nomad shows its listening, processing,
 For the Android system shortcut, use **Settings → Digital Assistant** to select Nomad, then invoke your device's assistant gesture/button. Cold starts and repeated invocations use the same voice session. Complete onboarding first and grant microphone access when prompted. This is an explicitly invoked assistant, not an always-on wake-word listener.
 
 - Questions use your selected downloaded model and are saved in conversation history. Enable **Web search** in the voice panel when you want the model to look up current information.
-- Common English phone commands work without a model: “open YouTube”, “set a timer for ten minutes”, “set an alarm for 7:30 AM”, “navigate to the nearest pharmacy”, “open Wi-Fi settings”, and “what time is it?”. Timers/alarms open the device's Clock app with the requested details; settings commands open the relevant controls rather than claiming to toggle restricted Android settings.
+- Common English phone commands work without a model: “open YouTube”, “set a timer for ten minutes”, “set an alarm for 7:30 AM”, “navigate to the nearest pharmacy”, “open Wi-Fi settings”, “call 555 123 4567”, “text 555 123 4567 saying I'm running late”, “play music”, “turn it up”, “mute”, “how much battery do I have?”, “open example.com”, and “what time is it?”. The same commands work when typed, and the model can request any of them through the `phone_action` tool for other phrasings.
+- Timers/alarms open the device's Clock app with the requested details; calls open the dialer, texts open Messages with the number and body filled in, and settings commands open the relevant controls rather than claiming to toggle restricted Android settings. Media and volume commands send standard playback keys and change only the media stream, which some players or devices may ignore while Do Not Disturb is active.
 - Recognition uses an installed system speech provider (such as Google's or Samsung's). Its language packs, network requirements, and offline support depend on that provider. Playback prefers an installed local TTS voice matching the device language.
-- Permission, missing-provider, language, network, model, and playback errors have visible recovery controls. Voice uses temporary audio focus and never changes alarm, ringtone, notification, or media volume levels.
+- Permission, missing-provider, language, network, model, and playback errors have visible recovery controls. Voice uses temporary audio focus and never changes alarm, ringtone, or notification volume.
 
 Automated tests exercise late recognition results, interruption, playback completion, permission recovery, navigation, and assistant launches. A real Android device is still needed to verify microphone acoustics, OEM assistant gestures, Bluetooth routing, and the device's recognition/Clock apps.
 
@@ -101,7 +104,7 @@ Real-device validation is still required: profile sustained chat, image requests
 
 ### Prerequisites
 
-- Android device with 2 GB+ RAM (4 GB+ recommended for Lite, 8 GB for Smart, 16 GB for Pro)
+- Android device with 2 GB+ RAM (4 GB+ recommended for Lite and Steady, 8 GB for Smart, 16 GB for Pro)
 - Flutter SDK (stable) for development
 - Android Studio, VS Code, or IntelliJ
 
@@ -118,9 +121,24 @@ flutter pub get
 # Run on a connected device
 flutter run
 
-# Build a release APK
+# Build a release APK (signed via android/key.properties + a personal
+# keystore; falls back to debug signing when absent)
 flutter build apk --release --split-per-abi
 ```
+
+### Release signing
+
+Release builds are signed with a personal keystore kept out of git:
+
+```sh
+keytool -genkey -v -keystore android/app/nomad-release.jks -keyalg RSA \
+  -keysize 2048 -validity 10000 -alias nomad
+```
+
+Then create `android/key.properties` with `storePassword`, `keyPassword`,
+`keyAlias=nomad`, and `storeFile=nomad-release.jks`. Both files are gitignored;
+keep a backup of the keystore and passwords — losing them means existing
+installs cannot be updated.
 
 ## Architecture
 
@@ -167,7 +185,7 @@ lib/
 | Local DB    | Hive + SharedPreferences        |
 | AI Engine   | llama.cpp via llamadart         |
 | Downloads   | background_downloader           |
-| Search      | DuckDuckGo / SearXNG (free)       |
+| Search      | TinyFish / DuckDuckGo / SearXNG / Brave (BYOK) |
 | WebView     | webview_flutter (creation preview) |
 | Fonts       | Instrument Sans (Google Fonts)  |
 | Icons       | Custom SVGs + Material Symbols  |
@@ -183,6 +201,8 @@ Nomad is built with privacy as a hard requirement:
 
 ## What's New in v0.2.0
 
+- **Nomad Steady on 4 GB phones** — Liquid AI LFM3-VL-2B (`QAD Q4_0`, 1.0 GB + 203 MB projector) replaces LFM 2.5 VL 3B: ~540 MB smaller, adds video understanding and thinking, and drops the RAM recommendation from 5 GB+ to 4 GB+
+- **Search your way** — optional SearXNG (self-hosted, LAN supported) and Brave Search API (bring-your-own key) backends, plus a Wi-Fi-only downloads toggle and free-storage checks before model downloads
 - **Nomad Nano tier** — Liquid AI LFM 2.5 VL 450M (`Q4_K_M`, 229 MB) bringing vision & chat to ultra-low-memory 2 GB RAM devices
 - **Nomad Pro tier** — Xiaomi MiMo V2.6 Distill 9B (`Q4_K_M`) powerhouse for coding, tool use, and multi-step reasoning on 16GB devices
 - **TinyFish Web Search** — live, uncached browser-rendered search via Monid as default web search (100% free, fast, bypasses anti-bot blocks)

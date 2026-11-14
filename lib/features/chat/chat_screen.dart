@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -19,6 +20,7 @@ import '../../core/services/inference_service.dart';
 import '../../core/services/memory_service.dart';
 import '../../core/services/model_service.dart';
 import '../../core/services/performance_service.dart';
+import '../../core/services/phone_actions.dart';
 import '../../core/services/search_service.dart';
 import '../../core/providers/model_provider.dart';
 import '../../core/providers/download_provider.dart';
@@ -319,6 +321,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           localPath: model.localPath,
           systemPrompt: 'Output only the summary. No preamble or greeting.',
           maxTokens: 128,
+          // Quick one-shot queries never need reasoning; skipping thinking
+          // keeps compaction fast and the summary free of thinking blocks.
+          thinkingBudget: const ThinkingBudget(maxTokens: 0),
         );
 
     String summary = '';
@@ -326,6 +331,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       if (!_isCurrent(generation) || _shouldStop) break;
       summary += token;
     }
+
+    summary = stripThinkingTags(summary);
 
     summary = summary.trim();
     if (summary.isNotEmpty &&
@@ -345,6 +352,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     required int generation,
     VoiceReply? voiceReply,
     List<String>? imagePaths,
+    List<String>? audioPaths,
     List<ToolDefinition>? tools,
   }) async {
     final stream = ref.read(chatInferenceProvider).streamChat(
@@ -355,7 +363,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           history: history,
           maxTokens: voiceReply == null ? 4096 : 512,
           imagePaths: imagePaths,
+          audioPaths: audioPaths,
           tools: tools,
+          // LFM3-VL-2B thinks by default. Spoken answers skip reasoning: the
+          // budget closes the reasoning block immediately so Nomad Voice (and
+          // voice quick-search queries) reply without a thinking phase.
+          thinkingBudget:
+              voiceReply == null ? null : const ThinkingBudget(maxTokens: 0),
         );
 
     // Throttle UI updates to ~20fps. Pushing the entire growing buffer to the
@@ -404,19 +418,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     return null;
   }
 
-  Future<void> _sendMessage({VoiceReply? voiceReply}) {
-    final task = _sendMessageImpl(voiceReply: voiceReply);
+  Future<void> _sendMessage({VoiceReply? voiceReply, String? voiceAudioPath}) {
+    final task = _sendMessageImpl(
+        voiceReply: voiceReply, voiceAudioPath: voiceAudioPath);
     _messageTask = task;
     return task.whenComplete(() {
       if (identical(_messageTask, task)) _messageTask = null;
     });
   }
 
-  Future<void> _sendMessageImpl({VoiceReply? voiceReply}) async {
+  Future<void> _sendMessageImpl(
+      {VoiceReply? voiceReply, String? voiceAudioPath}) async {
     if (voiceReply != null && !voiceReply.isCurrent) return;
     final text = _controller.text.trim();
     final attachedImages = List<String>.from(_attachedImages);
-    if ((text.isEmpty && attachedImages.isEmpty) || _isStreaming) return;
+    final attachedAudio = voiceAudioPath ?? '';
+    if ((text.isEmpty && attachedImages.isEmpty && attachedAudio.isEmpty) ||
+        _isStreaming) return;
     final inference = ref.read(chatInferenceProvider);
     if (inference.isGenerating) {
       if (voiceReply != null) {
@@ -428,6 +446,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       ));
       return;
     }
+    // Requests aimed at the phone itself run without a language model, exactly
+    // like spoken ones. Ambiguous phrasing ("open the pod bay doors") falls
+    // through to the model when Android finds no matching app.
+    if (defaultTargetPlatform == TargetPlatform.android &&
+        voiceReply == null &&
+        attachedImages.isEmpty &&
+        attachedAudio.isEmpty &&
+        !_isCreationMode) {
+      final command = AssistantCommand.parse(text);
+      if (command != null &&
+          command.response == null &&
+          command.action != 'endVoice' &&
+          command.action != 'webSearch') {
+        final result = await PhoneActions(ref.read(assistantPlatformProvider))
+            .run(command);
+        if (!mounted) return;
+        if (result.success || command.action != 'openApp') {
+          await _recordPhoneAction(text, result.message);
+          return;
+        }
+      }
+    }
+
     final selectedModel = ref.read(selectedModelProvider);
     if (selectedModel == null || selectedModel.localPath == null) {
       if (voiceReply != null) {
@@ -472,8 +513,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       final conversationId = chat.ensureConversationId();
       final historyMessages =
           List<ChatMessage>.of(ref.read(chatMessagesProvider));
+      final displayText =
+          text.isEmpty && attachedAudio.isNotEmpty ? 'Voice message' : text;
       final userMessage = ChatMessage(
-          text: text,
+          text: displayText,
           fromUser: true,
           time: DateTime.now(),
           imagePaths: attachedImages);
@@ -514,7 +557,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
           });
         }
       }
-      final actualPrompt = text.isNotEmpty ? text : 'Describe this image.';
+      final actualPrompt = text.isNotEmpty
+          ? text
+          : attachedAudio.isNotEmpty
+              ? 'Answer the spoken request.'
+              : 'Describe this image.';
       final toolsByName = <String, ToolDefinition>{};
       if (!isCreation) {
         for (final tool in ref.read(skillProvider.notifier).getActiveTools()) {
@@ -554,6 +601,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         generation: generation,
         voiceReply: voiceReply,
         imagePaths: attachedImages,
+        audioPaths: attachedAudio.isEmpty ? null : [attachedAudio],
         tools: allTools,
       );
 
@@ -724,6 +772,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
   }
 
+  /// <= 4 GB phones load models on demand; pre-warm on chat open or composer
+  /// focus so the first message does not wait for the full native load.
+  /// Best-effort: a failed or unavailable warm-up must never break the screen.
+  void _prewarmModel() {
+    try {
+      final model = ref.read(selectedModelProvider);
+      if (model == null || model.localPath == null) return;
+      final warming = ref
+          .read(chatInferenceProvider)
+          .warmUp(model.id, allowLowRam: true);
+      warming.catchError((Object _) {});
+    } catch (_) {}
+  }
+
+  void _composerFocusChanged() {
+    if (_focusNode.hasFocus) _prewarmModel();
+  }
+
+  /// Warn before selecting Smart/Pro on < 8 GB phones: their allocations can
+  /// OOM or crawl there. Loading itself happens on the next message.
+  Future<void> _onPickModel(HFModel model) async {
+    final proceed = await confirmHeavyModelLoad(
+        context, model, PerformanceService.instance.deviceRamGb);
+    if (!proceed || !mounted) return;
+    ref.read(selectedModelIdProvider.notifier).select(model.id);
+    _closeModelSelector();
+  }
+
   void _closeModelSelector() {
     if (!_isModelSelectorExpanded && !_isModelSelectorClosing) return;
     setState(() {
@@ -803,9 +879,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         setState(() => _hasText = hasText);
       }
     });
+    _focusNode.addListener(_composerFocusChanged);
     _loadPreferences();
     _queueAssistantLaunch(widget.assistantLaunch);
     WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _prewarmModel();
+    });
   }
 
   @override
@@ -856,6 +936,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       localeId:
           WidgetsBinding.instance.platformDispatcher.locale.toLanguageTag(),
       initialPrompt: initialPrompt,
+      audioTurns:
+          ModelService.supportsAudio(ref.read(selectedModelProvider)?.id ?? ''),
     );
   }
 
@@ -928,6 +1010,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   Future<void> _handleVoiceRequest(String text, VoiceReply reply) async {
     if (!mounted || !reply.isCurrent) return;
+    final audioPath = _voice.lastAudioPath;
+    if (text.trim().isEmpty && (audioPath == null || audioPath.isEmpty)) return;
     final command = AssistantCommand.parse(text);
     if (command?.action == 'endVoice') {
       await _exitLiveMode();
@@ -938,7 +1022,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       return;
     }
     _controller.text = text;
-    await _sendMessage(voiceReply: reply);
+    await _sendMessage(voiceReply: reply, voiceAudioPath: audioPath);
+  }
+
+  /// Commits a locally executed phone action to the conversation so typed and
+  /// spoken requests leave the same visible history, without a model turn.
+  Future<void> _recordPhoneAction(String text, String reply) async {
+    if (!mounted) return;
+    final chat = ref.read(chatMessagesProvider.notifier);
+    final conversationId = chat.ensureConversationId();
+    final history = List<ChatMessage>.of(ref.read(chatMessagesProvider));
+    final question =
+        ChatMessage(text: text, fromUser: true, time: DateTime.now());
+    final answer =
+        ChatMessage(text: reply, fromUser: false, time: DateTime.now());
+    chat.addMessage(question);
+    chat.addMessage(answer);
+    _controller.clear();
+    if (!context.isDesktop) _focusNode.unfocus();
+    HapticFeedback.selectionClick();
+    _scrollToBottom();
+    setState(() {});
+    await _saveConversation(
+      conversationId,
+      [...history, question, answer],
+      ref.read(selectedModelProvider),
+    );
   }
 
   Future<void> _executeVoiceCommand(
@@ -960,9 +1069,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         return;
       }
       final result = command.response ??
-          (await ref.read(assistantPlatformProvider).executeAction(
-              command.action, command.arguments))['message'] as String? ??
-          'That action is not available on this device.';
+          (await PhoneActions(ref.read(assistantPlatformProvider))
+                  .run(command))
+              .message;
       if (!_isCurrent(generation)) return;
       final answer =
           ChatMessage(text: result, fromUser: false, time: DateTime.now());
@@ -1050,6 +1159,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     WidgetsBinding.instance.removeObserver(this);
     _scrollController.dispose();
     _controller.dispose();
+    _focusNode.removeListener(_composerFocusChanged);
     _focusNode.dispose();
     _streamingTextNotifier.dispose();
     _modeController.dispose();
@@ -1802,12 +1912,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                                       () => _isModelSelectorClosing = false);
                                 }
                               },
-                              onSelect: (model) {
-                                ref
-                                    .read(selectedModelIdProvider.notifier)
-                                    .select(model.id);
-                                _closeModelSelector();
-                              },
+                              onSelect: _onPickModel,
                             ),
                         ],
                       ),

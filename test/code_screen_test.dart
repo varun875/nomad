@@ -35,7 +35,9 @@ class _Inference extends Fake implements InferenceService {
     List<Map<String, String>> history = const [],
     int maxTokens = 4096,
     List<String>? imagePaths,
+    List<String>? audioPaths,
     List<ToolDefinition>? tools,
+    ThinkingBudget? thinkingBudget,
   }) {
     calls++;
     this.prompt = prompt;
