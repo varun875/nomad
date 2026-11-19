@@ -87,6 +87,7 @@ void main() {
     await tester.pump();
     expect(voice.requests, ['tell me a joke']);
     expect(voice.session.phase, VoicePhase.speaking);
+    expect(voice.output.openings, [true]);
   });
 
   voiceTest('partial silence requests a final result before using the fallback',
@@ -313,7 +314,7 @@ void main() {
     expect(voice.input.recording, isFalse);
     voice.output.failSpeech = false;
     voice.handler =
-        (_, __) async => throw const VoiceSessionException(VoiceIssue.noModel);
+        (_, _) async => throw const VoiceSessionException(VoiceIssue.noModel);
     await voice.session.retry();
     voice.input.current.result('hello again', true);
     await tester.pump();

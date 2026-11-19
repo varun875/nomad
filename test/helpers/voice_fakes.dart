@@ -70,6 +70,8 @@ class FakeSpeechOutput implements SpeechOutput {
   int stops = 0;
   final locales = <String>[];
   final spoken = <String>[];
+  /// Whether each spoken sentence was the reply's opening sentence.
+  final openings = <bool>[];
   final playback = <Completer<void>>[];
 
   @override
@@ -79,8 +81,9 @@ class FakeSpeechOutput implements SpeechOutput {
   }
 
   @override
-  Future<void> speak(String text) async {
+  Future<void> speak(String text, {bool first = false}) async {
     if (failSpeech) throw StateError('No TTS voice');
+    openings.add(first);
     spoken.add(text);
     final done = Completer<void>();
     playback.add(done);

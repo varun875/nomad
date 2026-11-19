@@ -9,7 +9,6 @@ import 'assistant_platform_service.dart';
 import 'audio_capture_service.dart';
 import 'lfm3_tts_service.dart';
 import 'speech_input_service.dart';
-import 'tts_service.dart';
 
 enum VoicePhase {
   idle,
@@ -67,6 +66,7 @@ class VoiceSessionController extends ChangeNotifier {
     this.silenceWait = const Duration(seconds: 3),
     this.restartDelay = const Duration(milliseconds: 400),
     this.startTimeout = const Duration(seconds: 6),
+    this.silenceHold = const Duration(milliseconds: 1500),
   })  : _input = input,
         _output = output,
         _platform = platform,
@@ -86,6 +86,10 @@ class VoiceSessionController extends ChangeNotifier {
   final Duration silenceWait;
   final Duration restartDelay;
   final Duration startTimeout;
+
+  /// How long an audio-turn recording stays below the silence threshold
+  /// before it is finished hands-free. Only applies once speech was heard.
+  final Duration silenceHold;
   late final StreamSubscription<void> _interruptions;
   final soundLevel = ValueNotifier<double>(-50);
 
@@ -121,6 +125,7 @@ class VoiceSessionController extends ChangeNotifier {
   Timer? _silenceTimer;
   Timer? _startTimer;
   Timer? _sessionTimer;
+  Timer? _levelTimer;
 
   bool get isActive => _owner != null && phase != VoicePhase.idle;
   bool isOwnedBy(Object owner) => identical(_owner, owner) && isActive;
@@ -145,12 +150,13 @@ class VoiceSessionController extends ChangeNotifier {
     _silenceTimer?.cancel();
     _startTimer?.cancel();
     _sessionTimer?.cancel();
+    _levelTimer?.cancel();
   }
 
   Future<T> _withAudio<T>(Future<T> Function() operation) {
     final task = _audioOperations.then((_) => operation());
     _audioOperations =
-        task.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+        task.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return task;
   }
 
@@ -306,6 +312,7 @@ class VoiceSessionController extends ChangeNotifier {
             _phase = VoicePhase.listening;
             _changed();
           }
+          _pollCaptureLevel(epoch, id);
         });
       } catch (error) {
         debugPrint('Could not open the microphone for audio input: $error');
@@ -351,6 +358,55 @@ class VoiceSessionController extends ChangeNotifier {
         _onError(epoch, id, 'error_audio_error');
       }
     }
+  }
+
+  /// Polls the recorder amplitude while an audio turn listens: drives the
+  /// level orb (the recognizer's sound-level stream does not exist in this
+  /// mode) and the hands-free end-of-speech cutoff.
+  ///
+  /// Recording only auto-finishes after real speech was heard; until then a
+  /// quiet mic just means the user has not started talking yet.
+  void _pollCaptureLevel(int epoch, int id) {
+    _levelTimer?.cancel();
+    var heardSpeech = false;
+    var silentTicks = 0;
+    var polling = false;
+    const interval = Duration(milliseconds: 100);
+    final holdTicks = silenceHold.inMilliseconds ~/ interval.inMilliseconds;
+    _levelTimer = Timer.periodic(interval, (timer) async {
+      if (!_accepts(epoch, id) || phase != VoicePhase.listening) {
+        _levelTimer?.cancel();
+        return;
+      }
+      if (polling) return;
+      polling = true;
+      double level;
+      try {
+        level = await _capture!.level();
+      } catch (_) {
+        level = -160;
+      } finally {
+        polling = false;
+      }
+      if (!_accepts(epoch, id) || phase != VoicePhase.listening) {
+        _levelTimer?.cancel();
+        return;
+      }
+      // The recorder reports dBFS while the orb is normalized for the
+      // recognizer's dB scale; shift it into the same visual range.
+      soundLevel.value = (level + 20).clamp(-50.0, 0.0);
+      if (level > -38) {
+        heardSpeech = true;
+        silentTicks = 0;
+      } else if (heardSpeech && level < -52) {
+        if (++silentTicks >= holdTicks) {
+          _levelTimer?.cancel();
+          _finishListening(epoch, id);
+        }
+      } else if (level >= -52) {
+        silentTicks = 0;
+      }
+    });
   }
 
   void _onStatus(int epoch, int id, String status) {
@@ -414,7 +470,6 @@ class VoiceSessionController extends ChangeNotifier {
           }
           return;
         }
-        _transientAttempts = 0;
         _launchTurn(epoch, audioPath: path);
       }));
       return;
@@ -437,7 +492,6 @@ class VoiceSessionController extends ChangeNotifier {
     ++_listenId;
     _cancelTimers();
     if (_transcript.trim().isNotEmpty) {
-      _transientAttempts = 0;
       _launchTurn(epoch);
     } else if (++_emptyAttempts <= 2) {
       _scheduleListen(epoch);
@@ -496,6 +550,12 @@ class VoiceSessionController extends ChangeNotifier {
     _listenArmed = false;
     ++_listenId;
     _cancelTimers();
+    // A real request resets the streak: silence and transient-retry counters
+    // only bound CONSECUTIVE failures. In audio mode `_onResult` never runs,
+    // so without this reset the counters could never fall between turns and
+    // every later hiccup immediately paused the session as no-speech.
+    _emptyAttempts = 0;
+    _transientAttempts = 0;
     _lastHeard = text;
     _lastAudioPath = audioPath;
     _phase = VoicePhase.thinking;
@@ -518,11 +578,11 @@ class VoiceSessionController extends ChangeNotifier {
       onSpeechFailure: () {
         if (current()) _fail(VoiceIssue.speakerUnavailable);
       },
-      speak: (sentence) async {
+      speak: (sentence, {first = false}) async {
         if (!current()) return;
         _phase = VoicePhase.speaking;
         _changed();
-        await _output.speak(sentence);
+        await _output.speak(sentence, first: first);
         if (current()) {
           _phase = VoicePhase.thinking;
           _changed();
@@ -575,7 +635,12 @@ class VoiceSessionController extends ChangeNotifier {
         owner: owner,
         onRequest: request,
         cancelRequest: cancel,
-        localeId: _localeId);
+        localeId: _localeId,
+        // Resuming must stay in the recording mode the session started with:
+        // dropping this silently downgraded audio-capable models (LFM3 Omni,
+        // Gemma audio) to the system recognizer after every pause/resume or
+        // interrupt, so the next turn arrived as text instead of audio.
+        audioTurns: _audioTurns);
   }
 
   /// Tap-to-interrupt is explicit: stop both generation and playback before the
@@ -628,7 +693,7 @@ class VoiceSessionController extends ChangeNotifier {
 class VoiceReply {
   VoiceReply(
       {required bool Function() isCurrent,
-      required Future<void> Function(String) speak,
+      required Future<void> Function(String, {bool first}) speak,
       VoidCallback? onSpeechFailure})
       : _isCurrent = isCurrent,
         _speak = speak,
@@ -637,12 +702,13 @@ class VoiceReply {
   }
 
   final bool Function() _isCurrent;
-  final Future<void> Function(String) _speak;
+  final Future<void> Function(String, {bool first}) _speak;
   final VoidCallback? _onSpeechFailure;
   late final SpeechTextBuffer _text;
   Future<void> _tail = Future.value();
   bool _speechFailed = false;
   bool _finished = false;
+  int _sentences = 0;
   bool get isCurrent => _isCurrent();
 
   void addText(String text) {
@@ -650,10 +716,12 @@ class VoiceReply {
   }
 
   void _enqueue(String sentence) {
+    // Decided at enqueue time: a dropped opening sentence stays the opening.
+    final opening = _sentences++ == 0;
     _tail = _tail.then((_) async {
       if (!isCurrent || _speechFailed) return;
       try {
-        await _speak(sentence);
+        await _speak(sentence, first: opening);
       } catch (_) {
         _speechFailed = true;
         if (isCurrent) _onSpeechFailure?.call();

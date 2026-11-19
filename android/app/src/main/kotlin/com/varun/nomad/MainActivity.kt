@@ -27,7 +27,13 @@ class MainActivity : FlutterActivity() {
     private val audioManager by lazy { getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     private val actions by lazy { AssistantActions(this) }
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
-        if (change < 0 && hasAssistantFocus) {
+        // Only a permanent loss means another app now owns audio for good, so the
+        // voice session should stop. Transient losses are routine: the platform
+        // TTS engine requests its own USAGE_MEDIA focus while it speaks, which
+        // arrives here as AUDIOFOCUS_LOSS_TRANSIENT and used to tear down a live
+        // session ("Voice paused - Audio was interrupted"). Ducking is ignored
+        // for the same reason.
+        if (change == AudioManager.AUDIOFOCUS_LOSS && hasAssistantFocus) {
             releaseAssistantFocus()
             assistantChannel?.invokeMethod("audioFocusLost", null)
         }

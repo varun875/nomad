@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
@@ -233,18 +232,13 @@ class SkillsScreen extends ConsumerWidget {
         type: FileType.custom,
         allowedExtensions: ['md'],
       );
-      if (result == null || result.isEmpty) return;
+      if (result.isEmpty) return;
 
       final file = result.first;
+      // pickFiles returns an empty list on cancel and never null; a file
+      // deleted between picking and reading throws into the catch below.
       final bytes = await file.readAsBytes();
-      if (bytes == null && file.path != null) {
-        final f = File(file.path!);
-        if (!await f.exists()) return;
-      }
-
-      final text = bytes != null
-          ? utf8.decode(bytes)
-          : await File(file.path!).readAsString();
+      final text = utf8.decode(bytes);
 
       // Derive name from first H1 heading, falling back to filename.
       String name =

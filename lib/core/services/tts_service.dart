@@ -153,7 +153,9 @@ class TtsService implements SpeechOutput {
   }
 
   @override
-  Future<void> speak(String text) async {
+  Future<void> speak(String text, {bool first = false}) async {
+    // The system engine is the instant voice; the flag only matters to a
+    // hybrid output that switches between engines mid-reply.
     if (text.trim().isEmpty) return;
     if (!_ready) throw StateError('Spoken replies are not available.');
     final generation = _generation;

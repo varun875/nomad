@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -17,7 +18,7 @@ class _FakeOutput implements SpeechOutput {
   }
 
   @override
-  Future<void> speak(String text) async {
+  Future<void> speak(String text, {bool first = false}) async {
     spoken.add(text);
   }
 
@@ -31,8 +32,9 @@ Uint8List fakeWav() => Uint8List.fromList([82, 73, 70, 70, 1, 2, 3]);
 
 void main() {
   group('Lfm3TtsService', () {
-    test('speak synthesizes and plays sentences in order', () async {
+    test('synthesis runs ahead of playback, which stays in order', () async {
       final order = <String>[];
+      final gates = <Completer<void>>[];
       final service = Lfm3TtsService(
         initImpl: () async => true,
         synthImpl: (text, voice) async {
@@ -40,18 +42,30 @@ void main() {
           return fakeWav();
         },
         playImpl: (wav) async {
-          order.add('play:${wav.length}');
+          final gate = Completer<void>();
+          gates.add(gate);
+          order.add('play-start:${wav.length}');
+          await gate.future;
+          order.add('play-end:${wav.length}');
         },
       );
       expect(await service.initialize(localeId: 'en-US'), isTrue);
-      await service.speak('Hello world.');
-      await service.speak('Second sentence.');
+      final first = service.speak('Hello world.');
+      final second = service.speak('Second sentence.');
+      // The drain synthesizes the next sentence while the first one is still
+      // playing; playback itself never overlaps or reorders.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
       expect(order, [
         'synth:female:Hello world.',
-        'play:7',
+        'play-start:7',
         'synth:female:Second sentence.',
-        'play:7',
       ]);
+      gates[0].complete();
+      await first;
+      expect(order.sublist(3), ['play-end:7', 'play-start:7']);
+      gates[1].complete();
+      await second;
+      expect(order.last, 'play-end:7');
     });
 
     test('waits while the chat engine is generating', () async {
@@ -115,6 +129,50 @@ void main() {
       busy = false;
       await pending;
       expect(busy, isFalse);
+    });
+
+    test('hybrid opening speaks the first sentence with the system voice',
+        () async {
+      final synthesized = <String>[];
+      final native = Lfm3TtsService(
+        initImpl: () async => true,
+        synthImpl: (text, voice) async {
+          synthesized.add(text);
+          return fakeWav();
+        },
+        playImpl: (_) async {},
+      );
+      final system = _FakeOutput();
+      final smart = SmartSpeechOutput(native: native, system: system);
+
+      expect(await smart.initialize(localeId: 'en-US'), isTrue);
+      // The system engine is warmed up front so the opening has somewhere to
+      // go while the model is still generating.
+      expect(system.initialized, hasLength(1));
+      await smart.speak('Opening sentence.', first: true);
+      await smart.speak('Native body.');
+      expect(system.spoken, ['Opening sentence.']);
+      expect(synthesized, ['Native body.']);
+    });
+
+    test('hybrid opening falls back to the native voice without system TTS',
+        () async {
+      final synthesized = <String>[];
+      final native = Lfm3TtsService(
+        initImpl: () async => true,
+        synthImpl: (text, voice) async {
+          synthesized.add(text);
+          return fakeWav();
+        },
+        playImpl: (_) async {},
+      );
+      final system = _FakeOutput()..initResult = false;
+      final smart = SmartSpeechOutput(native: native, system: system);
+
+      expect(await smart.initialize(localeId: 'en-US'), isTrue);
+      await smart.speak('Opening sentence.', first: true);
+      expect(system.spoken, isEmpty);
+      expect(synthesized, ['Opening sentence.']);
     });
   });
 }

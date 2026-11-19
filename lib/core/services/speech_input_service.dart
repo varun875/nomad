@@ -85,6 +85,8 @@ abstract class SpeechOutput {
   Future<bool> initialize({required String localeId});
 
   /// Completes when this utterance finishes playing, not when it is queued.
-  Future<void> speak(String text);
+  /// [first] marks the opening sentence of a reply, letting a hybrid output
+  /// start it on an independent engine while the model is still generating.
+  Future<void> speak(String text, {bool first = false});
   Future<void> stop();
 }

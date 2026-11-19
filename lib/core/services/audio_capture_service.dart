@@ -22,6 +22,11 @@ abstract class AudioCapture {
 
   /// Stops and deletes the current recording.
   Future<void> cancel();
+
+  /// One-shot current input level in dBFS (negative; very negative when
+  /// nothing is captured). Polled while listening to drive the level orb and
+  /// the hands-free end-of-speech cutoff.
+  Future<double> level();
 }
 
 class DeviceAudioCapture implements AudioCapture {
@@ -84,7 +89,17 @@ class DeviceAudioCapture implements AudioCapture {
     if (!_ready && !await initialize()) {
       throw StateError('Audio capture is unavailable.');
     }
-    await cancel();
+    // A stop() that failed at the platform level leaves the recorder live
+    // while the Dart-side path is already cleared, and [cancel]'s cheap guard
+    // then skips the native call. Reset for real so the next take cannot
+    // collide with the abandoned session.
+    try {
+      if (await _recorder.isRecording()) {
+        await _recorder.cancel();
+      }
+    } catch (error) {
+      debugPrint('Could not reset audio capture: $error');
+    }
     final directory = await _directory();
     final path =
         '${directory.path}/nomad_voice_${DateTime.now().millisecondsSinceEpoch}.wav';
@@ -116,6 +131,16 @@ class DeviceAudioCapture implements AudioCapture {
       await _recorder.cancel();
     } catch (error) {
       debugPrint('Could not cancel audio capture: $error');
+    }
+  }
+
+  @override
+  Future<double> level() async {
+    try {
+      return (await _recorder.getAmplitude()).current;
+    } catch (error) {
+      debugPrint('Could not read the input level: $error');
+      return -160;
     }
   }
 }
