@@ -5,11 +5,9 @@ import 'dart:typed_data';
 import 'package:llamadart/llamadart.dart';
 
 const _modelNames = <String, String>{
-  'nomad-nano-lfm25-450m': 'Nomad Nano',
   'nomad-lite-qwen-3.5-0.8b': 'Nomad Lite',
   'nomad-omni-lfm3-2b': 'Nomad Omni',
-  'nomad-steady-lfm25-3b': 'Nomad Steady',
-  'nomad-steady-gemma4-e2b': 'Nomad Steady',
+  'nomad-steady-lfm3-2b': 'Nomad Steady',
   'nomad-smart-gemma4-e4b': 'Nomad Smart',
   'nomad-pro-mimo26-9b': 'Nomad Pro',
 };

@@ -20,20 +20,6 @@ class ModelService {
   // Nomad lineup (Unsloth GGUF quantizations & Liquid AI)
   static final List<HFModel> _allModels = [
     HFModel(
-      id: 'nomad-nano-lfm25-450m',
-      name: 'Nomad Nano',
-      baseModel: 'LFM 2.5 VL 450M',
-      description:
-          'Ultra-compact vision-language model by Liquid AI. Sub-250ms visual understanding, OCR, and chat. Runs effortlessly on 2GB RAM devices.',
-      sizeMB: 229,
-      totalBytes: 229313568,
-      mmprojBytes: 102815168,
-      requiredRAM: 2,
-      speed: 5.5,
-      quality: 4.0,
-      capabilities: ['chat', 'vision', 'speed', 'low-ram'],
-    ),
-    HFModel(
       id: 'nomad-lite-qwen-3.5-0.8b',
       name: 'Nomad Lite',
       baseModel: 'Qwen 3.5 0.8B',
@@ -61,7 +47,7 @@ class ModelService {
       capabilities: ['chat', 'vision', 'omni', 'reasoning', 'balanced'],
     ),
     HFModel(
-      id: 'nomad-steady-lfm25-3b',
+      id: 'nomad-steady-lfm3-2b',
       name: 'Nomad Steady',
       baseModel: 'LFM3-VL-2B (QAD Q4_0)',
       description:
@@ -173,9 +159,8 @@ class ModelService {
   /// Pure RAM filter used by [getAvailableModels]. Unit-testable without
   /// touching platform channels.
   ///
-  /// 2GB: Nomad Nano
-  /// 3GB: Nomad Nano + Nomad Lite
-  /// 4GB: Nomad Nano + Nomad Lite + Nomad Steady (LFM3-VL-2B)
+  /// 3GB: Nomad Lite
+  /// 4GB: Nomad Lite + Nomad Steady (LFM3-VL-2B)
   /// 6GB: + Nomad Omni (LFM3-Omni-2B: text, vision, audio)
   /// 7GB: + Nomad Smart
   /// 16GB+: All models including Nomad Pro
@@ -215,11 +200,9 @@ class ModelService {
 
   static String getDownloadUrl(String modelId) {
     switch (modelId) {
-      case 'nomad-nano-lfm25-450m':
-        return 'https://huggingface.co/LiquidAI/LFM2.5-VL-450M-GGUF/resolve/main/LFM2.5-VL-450M-Q4_K_M.gguf';
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf';
-      case 'nomad-steady-lfm25-3b':
+      case 'nomad-steady-lfm3-2b':
         return 'https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/LFM3-VL-2B-QAD-Q4_0.gguf';
       case 'nomad-omni-lfm3-2b':
         return 'https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/LFM3-Omni-2B-Q4_K_M.gguf';
@@ -236,11 +219,9 @@ class ModelService {
 
   static String? getMmprojUrl(String modelId) {
     switch (modelId) {
-      case 'nomad-nano-lfm25-450m':
-        return 'https://huggingface.co/LiquidAI/LFM2.5-VL-450M-GGUF/resolve/main/mmproj-LFM2.5-VL-450m-Q8_0.gguf';
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-F16.gguf';
-      case 'nomad-steady-lfm25-3b':
+      case 'nomad-steady-lfm3-2b':
         return 'https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/mmproj-LFM3-VL-2B-Q8_0.gguf';
       case 'nomad-omni-lfm3-2b':
         return 'https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/mmproj-LFM3-Omni-2B-Q8_0.gguf';
@@ -260,11 +241,9 @@ class ModelService {
 
   static String _repoFor(String modelId) {
     switch (modelId) {
-      case 'nomad-nano-lfm25-450m':
-        return 'LiquidAI/LFM2.5-VL-450M-GGUF';
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'unsloth/Qwen3.5-0.8B-GGUF';
-      case 'nomad-steady-lfm25-3b':
+      case 'nomad-steady-lfm3-2b':
         return 'LiquidAI/LFM3-VL-2B-GGUF';
       case 'nomad-omni-lfm3-2b':
         return 'LiquidAI/LFM3-Omni-2B-GGUF';
@@ -281,11 +260,9 @@ class ModelService {
 
   static String _filenameFor(String modelId) {
     switch (modelId) {
-      case 'nomad-nano-lfm25-450m':
-        return 'LFM2.5-VL-450M-Q4_K_M.gguf';
       case 'nomad-lite-qwen-3.5-0.8b':
         return 'Qwen3.5-0.8B-Q4_K_M.gguf';
-      case 'nomad-steady-lfm25-3b':
+      case 'nomad-steady-lfm3-2b':
         return 'LFM3-VL-2B-QAD-Q4_0.gguf';
       case 'nomad-omni-lfm3-2b':
         return 'LFM3-Omni-2B-Q4_K_M.gguf';
@@ -307,11 +284,9 @@ class ModelService {
   /// come from the same host, letting a tampered repo or MITM satisfy its own
   /// verification. Obtained from each HuggingFace repo's LFS metadata.
   static const _pinnedSha256 = <String, String>{
-    'nomad-nano-lfm25-450m':
-        '1093f1331319199bbcacdbd7ecc9aa6e5678db6b55073948d0f508be90c8ab68',
     'nomad-lite-qwen-3.5-0.8b':
         'bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517',
-    'nomad-steady-lfm25-3b':
+    'nomad-steady-lfm3-2b':
         '621c455376cb96a20891697deb9975c6fb47dd5ea98ed3ad1f3b7e8f24f0b1e6',
     'nomad-omni-lfm3-2b':
         '9f8d30e9d4fd7a9349d586e077988229b3ca0a0e4ad730897563d1eccc9893e2',
@@ -326,11 +301,9 @@ class ModelService {
   /// SHA-256 of each multimodal projector (mmproj) GGUF, downloaded alongside
   /// its model. Pinned for the same reason as [_pinnedSha256].
   static const _pinnedMmprojSha256 = <String, String>{
-    'nomad-nano-lfm25-450m':
-        'ebfc428baa37efad8bae93864f914b2634a09009f91ad59f974fe1a1565d8561',
     'nomad-lite-qwen-3.5-0.8b':
         '56e4c6cfe73b0c82e3e82bc518d7591997e61d81f723fc41a586f4fa69ea2453',
-    'nomad-steady-lfm25-3b':
+    'nomad-steady-lfm3-2b':
         'c5c5b58d544a18da919172d2d0368090ea1a4a351b6feb7f8a326a264a5918ab',
     'nomad-omni-lfm3-2b':
         '8a25f9d1931244429de404fccacfb7fb933970a36aa5688d2f5069f29c6b27b1',

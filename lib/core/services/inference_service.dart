@@ -300,15 +300,15 @@ class InferenceService {
         ((requiredRAM != null && requiredRAM > ramGB) ||
             allocationBytes > 1024 * mib)) {
       return 'This model is too large for the safe profile on a $ramGB GB phone. '
-          'Choose Nomad Nano or Nomad Lite. Your downloaded file is kept.';
+          'Choose Nomad Lite. Your downloaded file is kept.';
     }
     final reserve = (projector ? 256 : 512) * mib;
     if (memory != null &&
         (memory.lowMemory ||
             memory.availableBytes < allocationBytes + reserve)) {
       return projector
-          ? 'Not enough free RAM for image processing. Close other apps, use Nomad Nano, or send text only.'
-          : 'Not enough free RAM to load this model safely. Close other apps or choose Nomad Nano.';
+          ? 'Not enough free RAM for image processing. Close other apps, use Nomad Lite, or send text only.'
+          : 'Not enough free RAM to load this model safely. Close other apps or choose Nomad Lite.';
     }
     return null;
   }

@@ -14,14 +14,13 @@ But it can also search the web when you want it to, combining the privacy of loc
 
 | Model | Size | RAM | What it's good at |
 |-------|------|-----|-------------------|
-| Nomad Nano | 229 MB | 2 GB+ | Ultra-compact VLM: sub-250ms vision, runs on 2GB RAM |
 | Nomad Lite | 533 MB | 3 GB+ | Vision-capable, ultra-fast, sub-1B |
 | Nomad Omni | 1.0 GB | 6 GB+ | LFM3 Omni 2B: text, image and audio input, text or speech output |
 | Nomad Steady | 1.0 GB | 4 GB+ | LFM3-VL-2B: multimodal reasoning, vision, video understanding |
 | Nomad Smart | 5.3 GB | 7 GB+ | Flagship: vision, complex analysis, deep reasoning |
 | Nomad Pro | 6.0 GB | 16 GB | Powerhouse: coding, agentic tool use, multi-step reasoning |
 
-All models are GGUF quantizations of LFM 2.5 VL 450M (Nano), Qwen 3.5 0.8B (Lite), LFM3-VL-2B (Steady), LFM3 Omni 2B (Omni), Gemma 4 E4B (Smart), and MiMo V2.6 Distill 9B (Pro), downloaded directly from Hugging Face inside the app via the public CDN (no token needed).
+All models are GGUF quantizations of Qwen 3.5 0.8B (Lite), LFM3-VL-2B (Steady), LFM3 Omni 2B (Omni), Gemma 4 E4B (Smart), and MiMo V2.6 Distill 9B (Pro), downloaded directly from Hugging Face inside the app via the public CDN (no token needed).
 
 ### Vision
 
@@ -91,7 +90,7 @@ Smooth at the low end, not just on flagships: big-core-aware thread detection (a
 
 ### 4 GB Memory Profile
 
-Phones with 4 GB RAM or less load models on demand rather than preloading them at startup. Onboarding recommends Nano and Lite; the full Models catalog remains visible, but the low-memory runtime rejects incompatible or oversized models without deleting their downloads.
+Phones with 4 GB RAM or less load models on demand rather than preloading them at startup. Onboarding recommends Lite; the full Models catalog remains visible, but the low-memory runtime rejects incompatible or oversized models without deleting their downloads.
 
 - Android free-memory checks reserve 512 MiB beyond the model file size and 256 MiB beyond an additional vision projector. These are conservative estimates, not measured peak-memory guarantees.
 - Vision processes one image at a time, with gallery inputs resized to at most 512 x 512. The projector is released after a response, cancellation, or generation error, while the text model stays available.
@@ -203,6 +202,5 @@ Nomad is built with privacy as a hard requirement:
 
 - **Nomad Steady on 4 GB phones** — Liquid AI LFM3-VL-2B (`QAD Q4_0`, 1.0 GB + 203 MB projector) replaces LFM 2.5 VL 3B: ~540 MB smaller, adds video understanding and thinking, and drops the RAM recommendation from 5 GB+ to 4 GB+
 - **Search your way** — optional SearXNG (self-hosted, LAN supported) and Brave Search API (bring-your-own key) backends, plus a Wi-Fi-only downloads toggle and free-storage checks before model downloads
-- **Nomad Nano tier** — Liquid AI LFM 2.5 VL 450M (`Q4_K_M`, 229 MB) bringing vision & chat to ultra-low-memory 2 GB RAM devices
 - **Nomad Pro tier** — Xiaomi MiMo V2.6 Distill 9B (`Q4_K_M`) powerhouse for coding, tool use, and multi-step reasoning on 16GB devices
 - **TinyFish Web Search** — live, uncached browser-rendered search via Monid as default web search (100% free, fast, bypasses anti-bot blocks)

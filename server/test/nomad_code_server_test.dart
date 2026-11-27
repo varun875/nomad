@@ -179,7 +179,7 @@ Future<void> main() async {
     );
 
     const valid = <String, Object?>{
-      'model': 'nomad-nano-lfm25-450m',
+      'model': 'nomad-lite-qwen-3.5-0.8b',
       'messages': [
         {'role': 'user', 'content': 'Hello'},
       ],
