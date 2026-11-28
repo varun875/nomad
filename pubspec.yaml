@@ -27,7 +27,7 @@ dependencies:
   google_fonts: ^8.1.0
 
   path_provider: ^2.1.5
-  llamadart: ^0.19.4
+  llamadart: ^0.22.0
   background_downloader: ^9.5.4
   webview_flutter: ^4.13.1
   webview_all_windows: ^1.4.3
