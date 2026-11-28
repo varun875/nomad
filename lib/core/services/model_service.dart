@@ -17,7 +17,7 @@ class ModelService {
         '${documents.path}/${isDesktop ? 'Nomad/models' : 'models'}');
   }
 
-  // Nomad lineup (Unsloth GGUF quantizations & Liquid AI)
+  // Nomad lineup (Unsloth, Liquid AI, Finn Technologies & PrismML GGUFs)
   static final List<HFModel> _allModels = [
     HFModel(
       id: 'nomad-lite-qwen-3.5-0.8b',
@@ -31,20 +31,6 @@ class ModelService {
       speed: 5.0,
       quality: 4.0,
       capabilities: ['chat', 'vision', 'speed', 'low-ram'],
-    ),
-    HFModel(
-      id: 'nomad-omni-lfm3-2b',
-      name: 'Nomad Omni',
-      baseModel: 'LFM3 Omni 2B (Q4_K_M)',
-      description:
-          'Liquid AI LFM3-Omni-2B - one 2B model for text, images, video and audio, answering in text or 24 kHz speech through LiquidCodec. Its audio/vision projector (~484 MB) loads only when it is needed.',
-      sizeMB: 1049,
-      totalBytes: 1099630080,
-      mmprojBytes: 506842528,
-      requiredRAM: 6,
-      speed: 4.2,
-      quality: 4.5,
-      capabilities: ['chat', 'vision', 'omni', 'reasoning', 'balanced'],
     ),
     HFModel(
       id: 'nomad-steady-lfm3-2b',
@@ -75,14 +61,14 @@ class ModelService {
       capabilities: ['chat', 'vision', 'expert', 'reasoning', 'creative'],
     ),
     HFModel(
-      id: 'nomad-pro-mimo26-9b',
+      id: 'nomad-pro-bonsai25-27b',
       name: 'Nomad Pro',
-      baseModel: 'MiMo 2.6 Flash 9B Q4',
+      baseModel: 'Ternary Bonsai 2.5 27B (Q2_0)',
       description:
-          'Xiaomi MiMo V2.6 Distill 9B - an agentic powerhouse distilled from MiMo-V2.6-Flash. Excels at coding, tool use, multi-step reasoning, and long-horizon tasks. Requires 16GB RAM.',
-      sizeMB: 5975,
-      totalBytes: 6270652252,
-      mmprojBytes: 918166048,
+          'PrismML Ternary Bonsai 2.5 27B - a ternary agentic model at 1.76 bits per weight. FP16-level agentic tool calling, 90% of FP16 agentic coding, 262K context and a native vision tower. Requires 16GB RAM.',
+      sizeMB: 7319,
+      totalBytes: 7673194848,
+      mmprojBytes: 629246976,
       requiredRAM: 16,
       speed: 2.5,
       quality: 5.5,
@@ -161,9 +147,8 @@ class ModelService {
   ///
   /// 3GB: Nomad Lite
   /// 4GB: Nomad Lite + Nomad Steady (LFM3-VL-2B)
-  /// 6GB: + Nomad Omni (LFM3-Omni-2B: text, vision, audio)
   /// 7GB: + Nomad Smart
-  /// 16GB+: All models including Nomad Pro
+  /// 16GB+: All models including Nomad Pro (Ternary Bonsai 2.5 27B)
   static List<HFModel> filterByRam(List<HFModel> models, int ramGB) {
     return models.where((m) => m.requiredRAM <= ramGB).toList();
   }
@@ -204,14 +189,12 @@ class ModelService {
         return 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf';
       case 'nomad-steady-lfm3-2b':
         return 'https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/LFM3-VL-2B-QAD-Q4_0.gguf';
-      case 'nomad-omni-lfm3-2b':
-        return 'https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/LFM3-Omni-2B-Q4_K_M.gguf';
       case 'nomad-steady-gemma4-e2b':
         return 'https://huggingface.co/unsloth/gemma-4-E2B-it-qat-mobile-GGUF/resolve/main/gemma-4-E2B-it-qat-UD-Q2_K_XL.gguf';
       case 'nomad-smart-gemma4-e4b':
         return 'https://huggingface.co/Finn-Technologies/e1/resolve/main/e1.Q4_K_M.gguf';
-      case 'nomad-pro-mimo26-9b':
-        return 'https://huggingface.co/bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF/resolve/main/MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf';
+      case 'nomad-pro-bonsai25-27b':
+        return 'https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF/resolve/main/Ternary-Bonsai-2.5-27B-Q2_0.gguf';
       default:
         return '';
     }
@@ -223,14 +206,12 @@ class ModelService {
         return 'https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/mmproj-F16.gguf';
       case 'nomad-steady-lfm3-2b':
         return 'https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/mmproj-LFM3-VL-2B-Q8_0.gguf';
-      case 'nomad-omni-lfm3-2b':
-        return 'https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/mmproj-LFM3-Omni-2B-Q8_0.gguf';
       case 'nomad-steady-gemma4-e2b':
         return 'https://huggingface.co/unsloth/gemma-4-E2B-it-qat-mobile-GGUF/resolve/main/mmproj-F16.gguf';
       case 'nomad-smart-gemma4-e4b':
         return 'https://huggingface.co/Finn-Technologies/e1/resolve/main/mmproj-e1.gguf';
-      case 'nomad-pro-mimo26-9b':
-        return 'https://huggingface.co/bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF/resolve/main/mmproj-MiMo-V2.6-Distill-Qwen-9B-f16.gguf';
+      case 'nomad-pro-bonsai25-27b':
+        return 'https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF/resolve/main/Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf';
       default:
         return null;
     }
@@ -245,14 +226,12 @@ class ModelService {
         return 'unsloth/Qwen3.5-0.8B-GGUF';
       case 'nomad-steady-lfm3-2b':
         return 'LiquidAI/LFM3-VL-2B-GGUF';
-      case 'nomad-omni-lfm3-2b':
-        return 'LiquidAI/LFM3-Omni-2B-GGUF';
       case 'nomad-steady-gemma4-e2b':
         return 'unsloth/gemma-4-E2B-it-qat-mobile-GGUF';
       case 'nomad-smart-gemma4-e4b':
         return 'Finn-Technologies/e1';
-      case 'nomad-pro-mimo26-9b':
-        return 'bartowski/MiMo-V2.6-Distill-Qwen-9B-GGUF';
+      case 'nomad-pro-bonsai25-27b':
+        return 'prism-ml/Ternary-Bonsai-2.5-27B-GGUF';
       default:
         return '';
     }
@@ -264,14 +243,12 @@ class ModelService {
         return 'Qwen3.5-0.8B-Q4_K_M.gguf';
       case 'nomad-steady-lfm3-2b':
         return 'LFM3-VL-2B-QAD-Q4_0.gguf';
-      case 'nomad-omni-lfm3-2b':
-        return 'LFM3-Omni-2B-Q4_K_M.gguf';
       case 'nomad-steady-gemma4-e2b':
         return 'gemma-4-E2B-it-qat-UD-Q2_K_XL.gguf';
       case 'nomad-smart-gemma4-e4b':
         return 'e1.Q4_K_M.gguf';
-      case 'nomad-pro-mimo26-9b':
-        return 'MiMo-V2.6-Distill-Qwen-9B-Q4_K_M.gguf';
+      case 'nomad-pro-bonsai25-27b':
+        return 'Ternary-Bonsai-2.5-27B-Q2_0.gguf';
       default:
         return '';
     }
@@ -288,14 +265,12 @@ class ModelService {
         'bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517',
     'nomad-steady-lfm3-2b':
         '621c455376cb96a20891697deb9975c6fb47dd5ea98ed3ad1f3b7e8f24f0b1e6',
-    'nomad-omni-lfm3-2b':
-        '9f8d30e9d4fd7a9349d586e077988229b3ca0a0e4ad730897563d1eccc9893e2',
     'nomad-steady-gemma4-e2b':
         '0a5bbc20f91f92da96ab4870fa71b356c45b8500a7b8b9c3e0eb48359b72da28',
     'nomad-smart-gemma4-e4b':
         'f70cff4e2c80b68872446a5e87715d84eb1d080f8cea3b73f3802535f8c36782',
-    'nomad-pro-mimo26-9b':
-        '4bca6f18c73f72270c7a20c2ea2bea581de8246e318714277120369d34048c81',
+    'nomad-pro-bonsai25-27b':
+        '84496171ca79d4d33fb45612a2afd8303ec494baf916281023b7dc9cb3b3b9fa',
   };
 
   /// SHA-256 of each multimodal projector (mmproj) GGUF, downloaded alongside
@@ -305,14 +280,12 @@ class ModelService {
         '56e4c6cfe73b0c82e3e82bc518d7591997e61d81f723fc41a586f4fa69ea2453',
     'nomad-steady-lfm3-2b':
         'c5c5b58d544a18da919172d2d0368090ea1a4a351b6feb7f8a326a264a5918ab',
-    'nomad-omni-lfm3-2b':
-        '8a25f9d1931244429de404fccacfb7fb933970a36aa5688d2f5069f29c6b27b1',
     'nomad-steady-gemma4-e2b':
         '13c8966d1635d02e6727f27402880614906fa291850c07feda18dbcddf2291b6',
     'nomad-smart-gemma4-e4b':
         '0d59fc5ceca55f0a3f5398ceaca87349597bdae2597b23619c435f164a0c0c52',
-    'nomad-pro-mimo26-9b':
-        'ff348f3180a63188aa7285db85f550fe38acb61dd013c599eb8bad08d2cc2576',
+    'nomad-pro-bonsai25-27b':
+        '6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903',
   };
 
   static String? pinnedSha256For(String modelId) => _pinnedSha256[modelId];

@@ -208,7 +208,7 @@ void main() {
 
     test('unsafe rejection leaves the current safe model intact', () async {
       await service.loadModel(path);
-      final unsafe = '${directory.path}/nomad-pro-mimo26-9b.gguf';
+      final unsafe = '${directory.path}/nomad-pro-bonsai25-27b.gguf';
       await File(unsafe).writeAsBytes([0]);
       await expectLater(service.loadModel(unsafe), throwsStateError);
       expect(service.modelPath, path);

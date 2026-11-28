@@ -28,7 +28,7 @@ class _PlaybackItem {
 
 /// Native on-device speech output via LFM3-Audio (LFM3-Omni) TTS.
 ///
-/// When the loaded model is Nomad Omni, answers are synthesized with
+/// When an audio-capable Omni model is loaded, answers are synthesized with
 /// `TextToSpeechEngine` + `Lfm3AudioTtsAdapter` attached to the *same*
 /// `LlamaEngine` the chat inference uses (no second model load). PCM comes
 /// back as a complete 24 kHz mono buffer; it is rendered to WAV with

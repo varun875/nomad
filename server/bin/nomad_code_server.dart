@@ -6,10 +6,9 @@ import 'package:llamadart/llamadart.dart';
 
 const _modelNames = <String, String>{
   'nomad-lite-qwen-3.5-0.8b': 'Nomad Lite',
-  'nomad-omni-lfm3-2b': 'Nomad Omni',
   'nomad-steady-lfm3-2b': 'Nomad Steady',
   'nomad-smart-gemma4-e4b': 'Nomad Smart',
-  'nomad-pro-mimo26-9b': 'Nomad Pro',
+  'nomad-pro-bonsai25-27b': 'Nomad Pro',
 };
 
 Future<void> main(List<String> args) async {

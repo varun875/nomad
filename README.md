@@ -32,15 +32,14 @@ Nomad runs quantized LLMs directly on your device using llamadart (llama.cpp bin
 
 ## Models
 
-Five tiers, downloaded straight from Hugging Face inside the app via the public CDN (no token needed).
+Four tiers, downloaded straight from Hugging Face inside the app via the public CDN (no token needed).
 
 | Model | Base | Size | RAM | What it's good at |
 |-------|------|------|-----|-------------------|
 | **Nomad Lite** | Qwen 3.5 0.8B | 533 MB | 3 GB+ | Vision-capable, ultra-fast |
 | **Nomad Steady** | LFM3-VL-2B | 1.0 GB | 4 GB+ | Multimodal reasoning, vision, video understanding |
-| **Nomad Omni** | LFM3 Omni 2B | 1.0 GB | 6 GB+ | Text, image and audio input, text or speech output |
 | **Nomad Smart** | Gemma 4 E4B | 5.3 GB | 7 GB+ | Flagship: vision, complex analysis, deep reasoning |
-| **Nomad Pro** | MiMo V2.6 Distill 9B | 6.0 GB | 16 GB | Powerhouse: coding, agentic tool use, multi-step reasoning |
+| **Nomad Pro** | Ternary Bonsai 2.5 27B | 7.3 GB | 16 GB | Agentic ternary powerhouse: FP16-level tool calling, 262K context |
 
 ## Install
 
@@ -199,7 +198,7 @@ lib/
 
 - **Nomad Steady on 4 GB phones** — Liquid AI LFM3-VL-2B (`QAD Q4_0`, 1.0 GB + 203 MB projector) replaces LFM 2.5 VL 3B: ~540 MB smaller, adds video understanding and thinking, and drops the RAM recommendation from 5 GB+ to 4 GB+
 - **Search your way** — optional SearXNG (self-hosted, LAN supported) and Brave Search API (bring-your-own key) backends, plus a Wi-Fi-only downloads toggle and free-storage checks before model downloads
-- **Nomad Pro tier** — Xiaomi MiMo V2.6 Distill 9B (`Q4_K_M`) powerhouse for coding, tool use, and multi-step reasoning on 16 GB devices
+- **Nomad Pro tier** — PrismML Ternary Bonsai 2.5 27B (`Q2_0`), a 1.76-bit ternary agentic model with FP16-level tool calling, 262K context and a native vision tower, for 16 GB devices
 - **TinyFish web search** — live, uncached browser-rendered search via Monid as default web search (100% free, fast, bypasses anti-bot blocks)
 
 ## License

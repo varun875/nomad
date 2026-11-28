@@ -63,46 +63,45 @@ void main() {
   });
 
   group('ModelService.getAllModels', () {
-    test('exposes the five-model Nomad lineup', () {
+    test('exposes the four-model Nomad lineup', () {
       final models = ModelService.getAllModels();
-      expect(models, hasLength(5));
+      expect(models, hasLength(4));
       expect(models.every((m) => m.id.startsWith('nomad-')), isTrue);
     });
 
-    test('configures Nomad Omni as LFM3-Omni-2B', () {
-      final omni = ModelService.getAllModels()
-          .firstWhere((m) => m.id == 'nomad-omni-lfm3-2b');
-      expect(omni.name, 'Nomad Omni');
-      expect(omni.baseModel, 'LFM3 Omni 2B (Q4_K_M)');
-      expect(omni.requiredRAM, 6);
-      expect(omni.sizeMB, 1049);
-      expect(omni.totalBytes, 1099630080);
-      expect(omni.capabilities, containsAll(['vision', 'omni']));
+    test('configures Nomad Pro as Ternary Bonsai 2.5', () {
+      final pro = ModelService.getAllModels()
+          .firstWhere((m) => m.id == 'nomad-pro-bonsai25-27b');
+      expect(pro.name, 'Nomad Pro');
+      expect(pro.baseModel, 'Ternary Bonsai 2.5 27B (Q2_0)');
+      expect(pro.requiredRAM, 16);
+      expect(pro.sizeMB, 7319);
+      expect(pro.totalBytes, 7673194848);
+      expect(pro.capabilities, containsAll(['expert', 'agentic']));
       expect(
-        ModelService.getDownloadUrl('nomad-omni-lfm3-2b'),
-        'https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/LFM3-Omni-2B-Q4_K_M.gguf',
+        ModelService.getDownloadUrl('nomad-pro-bonsai25-27b'),
+        'https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF/resolve/main/Ternary-Bonsai-2.5-27B-Q2_0.gguf',
       );
       expect(
-        ModelService.getMmprojUrl('nomad-omni-lfm3-2b'),
-        'https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/mmproj-LFM3-Omni-2B-Q8_0.gguf',
+        ModelService.getMmprojUrl('nomad-pro-bonsai25-27b'),
+        'https://huggingface.co/prism-ml/Ternary-Bonsai-2.5-27B-GGUF/resolve/main/Ternary-Bonsai-2.5-27B-mmproj-Q8_0.gguf',
       );
       expect(
-        ModelService.repoFor('nomad-omni-lfm3-2b'),
-        'LiquidAI/LFM3-Omni-2B-GGUF',
+        ModelService.repoFor('nomad-pro-bonsai25-27b'),
+        'prism-ml/Ternary-Bonsai-2.5-27B-GGUF',
       );
       expect(
-        ModelService.filenameFor('nomad-omni-lfm3-2b'),
-        'LFM3-Omni-2B-Q4_K_M.gguf',
+        ModelService.filenameFor('nomad-pro-bonsai25-27b'),
+        'Ternary-Bonsai-2.5-27B-Q2_0.gguf',
       );
       expect(
-        ModelService.pinnedSha256For('nomad-omni-lfm3-2b'),
-        '9f8d30e9d4fd7a9349d586e077988229b3ca0a0e4ad730897563d1eccc9893e2',
+        ModelService.pinnedSha256For('nomad-pro-bonsai25-27b'),
+        '84496171ca79d4d33fb45612a2afd8303ec494baf916281023b7dc9cb3b3b9fa',
       );
       expect(
-        ModelService.pinnedMmprojSha256For('nomad-omni-lfm3-2b'),
-        '8a25f9d1931244429de404fccacfb7fb933970a36aa5688d2f5069f29c6b27b1',
+        ModelService.pinnedMmprojSha256For('nomad-pro-bonsai25-27b'),
+        '6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903',
       );
-      expect(ModelService.supportsAudio('nomad-omni-lfm3-2b'), isTrue);
       expect(ModelService.supportsAudio('nomad-steady-lfm3-2b'), isFalse);
     });
 

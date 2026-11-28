@@ -679,7 +679,7 @@ class InferenceService {
             await File(mmProjPath).exists();
         if (!mediaAvailable) {
           yield hasAudio
-              ? "Error: The current model cannot hear audio. Switch to an audio-capable model such as Nomad Omni."
+              ? "Error: The current model cannot hear audio."
               : "Error: The current model does not support image input. Switch to a vision-capable model or remove the attached image.";
           return;
         }
