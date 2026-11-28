@@ -1,0 +1,66 @@
+# Nomad CI: tests + release APK on every push to master, artifacts on tags.
+# Signing is optional: set repo secrets RELEASE_KEYSTORE_BASE64 (the .jks,
+# base64-encoded) and RELEASE_KEY_PROPERTIES (key.properties contents with
+# storeFile=app/nomad-release.jks) to get release-signed builds; without
+# them the Gradle debug fallback applies.
+name: Build APK
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Restore release signing (optional)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KEY_PROPERTIES: ${{ secrets.RELEASE_KEY_PROPERTIES }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEY_PROPERTIES" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > android/app/nomad-release.jks
+            echo "$KEY_PROPERTIES" > android/key.properties
+          else
+            echo "No signing secrets found; the release build falls back to debug signing."
+          fi
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Run tests
+        run: flutter test
+
+      - name: Build split release APKs
+        run: flutter build apk --release --split-per-abi
+
+      - name: Upload APKs as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nomad-apks
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+
+      - name: Attach APKs to release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/app/outputs/flutter-apk/*.apk
+          draft: true
